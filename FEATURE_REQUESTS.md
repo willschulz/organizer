@@ -37,3 +37,32 @@ reorder is the natural interaction for a todo list.
 is a frequent enough need to be worth building.
 
 ---
+
+## FR-002 — Deadline-aware within-row sort order
+
+**Summary:** Within each category row, projects with the soonest
+deadline should appear leftmost; projects without a deadline should
+appear rightmost.
+
+**Motivation:** Adding a deadline to a project currently has no effect
+on its position in the row — it stays wherever `display_order` puts it.
+A new project with an imminent deadline ends up buried at the right end
+of the row, which defeats the purpose of setting the deadline.
+
+**Desired sort key (per row, left to right):**
+1. Projects with a deadline, ascending by date (soonest first).
+2. Projects without a deadline, in their existing `display_order`.
+
+**Scope:**
+- Sort is applied at render time in the frontend (`renderRow`) — no
+  backend change required; `deadline` is already returned in
+  `GET /api/projects`.
+- The drag-to-reorder feature (FR-001) should only apply within the
+  no-deadline group, or be suspended entirely when a deadline is set,
+  to avoid user confusion about why a manually reordered card snaps
+  back.
+- `display_order` should remain writable for the no-deadline group so
+  manual ordering still works there.
+
+**Priority:** High — deadline sorting is the whole point of setting a
+deadline on a card.

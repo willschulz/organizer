@@ -51,18 +51,29 @@ of the row, which defeats the purpose of setting the deadline.
 
 **Desired sort key (per row, left to right):**
 1. Projects with a deadline, ascending by date (soonest first).
-2. Projects without a deadline, in their existing `display_order`.
+2. Projects without a deadline, descending by "last activity" —
+   defined as the most recent of:
+   - `MAX(todo.updated_at)` across all todos on the project, or
+   - `MAX(todo.completed_at)` across completed todos, or
+   - `project.updated_at` as a fallback when there are no todos.
+   This surfaces the most actively-worked project at the left edge of
+   each row without any manual bookkeeping.
+
+**Rationale for the activity heuristic:** deadline-less projects don't
+have an urgency signal, so recency-of-work is the best proxy for "what
+should I look at first." A project where a todo was just completed or
+edited is more salient than one that hasn't been touched in weeks.
 
 **Scope:**
 - Sort is applied at render time in the frontend (`renderRow`) — no
-  backend change required; `deadline` is already returned in
+  backend change required; `todos[].updated_at`, `todos[].completed_at`,
+  and `project.updated_at` are all already returned in
   `GET /api/projects`.
-- The drag-to-reorder feature (FR-001) should only apply within the
-  no-deadline group, or be suspended entirely when a deadline is set,
-  to avoid user confusion about why a manually reordered card snaps
-  back.
-- `display_order` should remain writable for the no-deadline group so
-  manual ordering still works there.
+- The drag-to-reorder feature (FR-001) should only apply within each
+  group (deadline and no-deadline separately), or be suspended entirely
+  while automatic sorting is active, to avoid confusion about cards
+  snapping back after a manual drag.
 
 **Priority:** High — deadline sorting is the whole point of setting a
-deadline on a card.
+deadline on a card; activity-based ordering makes the no-deadline group
+self-organizing.

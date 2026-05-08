@@ -1,0 +1,15 @@
+[Unit]
+Description=Organizer (project tracker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=/opt/organizer
+EnvironmentFile=-/opt/organizer/.env
+ExecStart=/opt/organizer/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8551
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,510 @@
+"""
+Organizer -- FastAPI backend.
+
+Run locally:
+    uvicorn main:app --reload --port 8551
+
+In production this is run by systemd via organizer.service.
+
+Tailnet is the auth perimeter; there is no app-level auth.
+"""
+
+from __future__ import annotations
+
+import json
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
+
+import db
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _now() -> str:
+    """ISO-8601 UTC timestamp, second precision."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _project_to_dict(row) -> dict[str, Any]:
+    d = dict(row)
+    try:
+        d["paths"] = json.loads(d.pop("paths_json") or "[]")
+    except Exception:
+        d["paths"] = []
+    d["archived"] = bool(d["archived"])
+    return d
+
+
+def _todo_to_dict(row) -> dict[str, Any]:
+    d = dict(row)
+    d["is_blocker"] = bool(d["is_blocker"])
+    d["is_followup"] = bool(d["is_followup"])
+    d["in_progress"] = bool(d.get("in_progress", 0))
+    d["completed"] = bool(d["completed"])
+    try:
+        d["paths"] = json.loads(d.pop("paths_json") or "[]")
+    except Exception:
+        d["paths"] = []
+    return d
+
+
+def _next_display_order(table: str, where_sql: str, params: tuple) -> int:
+    cur = db.get_conn().execute(
+        f"SELECT COALESCE(MAX(display_order), -1) + 1 AS next FROM {table} WHERE {where_sql}",
+        params,
+    )
+    return int(cur.fetchone()["next"])
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
+
+class ProjectCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    category: str
+    deadline: Optional[str] = None  # ISO date "YYYY-MM-DD"
+    notes: str = ""
+    paths: list[str] = Field(default_factory=list)
+    display_order: Optional[int] = None
+
+    @field_validator("category")
+    @classmethod
+    def _check_category(cls, v: str) -> str:
+        if v not in db.CATEGORIES:
+            raise ValueError(f"category must be one of {db.CATEGORIES}")
+        return v
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    category: Optional[str] = None
+    deadline: Optional[str] = None       # pass null to clear
+    deadline_set: bool = False           # explicit: True means use deadline (incl null)
+    notes: Optional[str] = None
+    paths: Optional[list[str]] = None
+    display_order: Optional[int] = None
+    archived: Optional[bool] = None
+
+    @field_validator("category")
+    @classmethod
+    def _check_category(cls, v):
+        if v is not None and v not in db.CATEGORIES:
+            raise ValueError(f"category must be one of {db.CATEGORIES}")
+        return v
+
+
+class TodoCreate(BaseModel):
+    project_id: int
+    text: str = Field(..., min_length=1)
+    parent_id: Optional[int] = None
+    is_blocker: bool = False
+    is_followup: bool = False
+    in_progress: bool = False
+    display_order: Optional[int] = None
+    notes: str = ""
+    paths: list[str] = Field(default_factory=list)
+
+
+class TodoUpdate(BaseModel):
+    text: Optional[str] = Field(default=None, min_length=1)
+    parent_id: Optional[int] = None
+    parent_id_set: bool = False
+    is_blocker: Optional[bool] = None
+    is_followup: Optional[bool] = None
+    in_progress: Optional[bool] = None
+    display_order: Optional[int] = None
+    completed: Optional[bool] = None
+    notes: Optional[str] = None
+    paths: Optional[list[str]] = None
+
+
+# ---------------------------------------------------------------------------
+# App lifecycle
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_schema()
+    yield
+
+
+app = FastAPI(title="Organizer", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+# ---------------------------------------------------------------------------
+# Static / PWA routes
+# ---------------------------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+async def index():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/manifest.webmanifest", include_in_schema=False)
+async def manifest():
+    return FileResponse(
+        STATIC_DIR / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
+
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+async def apple_touch_icon():
+    return FileResponse(STATIC_DIR / "icons" / "apple-touch-icon.png", media_type="image/png")
+
+
+@app.get("/icon-192.png", include_in_schema=False)
+async def icon_192():
+    return FileResponse(STATIC_DIR / "icons" / "icon-192.png", media_type="image/png")
+
+
+@app.get("/icon-512.png", include_in_schema=False)
+async def icon_512():
+    return FileResponse(STATIC_DIR / "icons" / "icon-512.png", media_type="image/png")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    fav = STATIC_DIR / "icons" / "favicon.ico"
+    if fav.exists():
+        return FileResponse(fav, media_type="image/x-icon")
+    return FileResponse(STATIC_DIR / "icons" / "icon-192.png", media_type="image/png")
+
+
+# ---------------------------------------------------------------------------
+# API: projects
+# ---------------------------------------------------------------------------
+
+@app.get("/api/projects")
+async def list_projects(include_archived: bool = Query(default=False)):
+    """All projects with their todos, grouped by category."""
+    conn = db.get_conn()
+    where = "" if include_archived else "WHERE archived = 0"
+    proj_rows = conn.execute(
+        f"SELECT * FROM projects {where} "
+        "ORDER BY category, display_order, id"
+    ).fetchall()
+    todo_rows = conn.execute(
+        "SELECT * FROM todos ORDER BY project_id, "
+        "is_followup, completed, is_blocker DESC, in_progress DESC, display_order, id"
+    ).fetchall()
+
+    todos_by_project: dict[int, list[dict]] = {}
+    for r in todo_rows:
+        todos_by_project.setdefault(r["project_id"], []).append(_todo_to_dict(r))
+
+    grouped: dict[str, list[dict]] = {c: [] for c in db.CATEGORIES}
+    for r in proj_rows:
+        proj = _project_to_dict(r)
+        proj["todos"] = todos_by_project.get(proj["id"], [])
+        grouped.setdefault(proj["category"], []).append(proj)
+
+    return {
+        "categories": db.CATEGORIES,
+        "projects": grouped,
+    }
+
+
+@app.post("/api/projects", status_code=201)
+async def create_project(payload: ProjectCreate):
+    conn = db.get_conn()
+    now = _now()
+    order = (
+        payload.display_order
+        if payload.display_order is not None
+        else _next_display_order(
+            "projects", "category = ? AND archived = 0", (payload.category,)
+        )
+    )
+    cur = conn.execute(
+        "INSERT INTO projects "
+        "(name, category, display_order, deadline, notes, paths_json, archived, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+        (
+            payload.name.strip(),
+            payload.category,
+            order,
+            payload.deadline,
+            payload.notes,
+            json.dumps(payload.paths),
+            now,
+            now,
+        ),
+    )
+    pid = cur.lastrowid
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (pid,)).fetchone()
+    proj = _project_to_dict(row)
+    proj["todos"] = []
+    return proj
+
+
+@app.patch("/api/projects/{project_id}")
+async def update_project(project_id: int, payload: ProjectUpdate):
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    fields: list[str] = []
+    values: list[Any] = []
+    if payload.name is not None:
+        fields.append("name = ?")
+        values.append(payload.name.strip())
+    if payload.category is not None:
+        fields.append("category = ?")
+        values.append(payload.category)
+    if payload.deadline_set:
+        fields.append("deadline = ?")
+        values.append(payload.deadline)
+    if payload.notes is not None:
+        fields.append("notes = ?")
+        values.append(payload.notes)
+    if payload.paths is not None:
+        fields.append("paths_json = ?")
+        values.append(json.dumps(payload.paths))
+    if payload.display_order is not None:
+        fields.append("display_order = ?")
+        values.append(payload.display_order)
+    if payload.archived is not None:
+        fields.append("archived = ?")
+        values.append(1 if payload.archived else 0)
+
+    if not fields:
+        return _project_with_todos(project_id)
+
+    fields.append("updated_at = ?")
+    values.append(_now())
+    values.append(project_id)
+    conn.execute(f"UPDATE projects SET {', '.join(fields)} WHERE id = ?", values)
+    return _project_with_todos(project_id)
+
+
+@app.delete("/api/projects/{project_id}", status_code=204)
+async def delete_project(project_id: int):
+    conn = db.get_conn()
+    cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="project not found")
+    return None
+
+
+def _project_with_todos(project_id: int) -> dict[str, Any]:
+    conn = db.get_conn()
+    pr = conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if pr is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    proj = _project_to_dict(pr)
+    todos = conn.execute(
+        "SELECT * FROM todos WHERE project_id = ? "
+        "ORDER BY is_followup, completed, is_blocker DESC, in_progress DESC, display_order, id",
+        (project_id,),
+    ).fetchall()
+    proj["todos"] = [_todo_to_dict(t) for t in todos]
+    return proj
+
+
+# ---------------------------------------------------------------------------
+# API: todos
+# ---------------------------------------------------------------------------
+
+@app.post("/api/todos", status_code=201)
+async def create_todo(payload: TodoCreate):
+    conn = db.get_conn()
+    proj = conn.execute("SELECT id FROM projects WHERE id = ?", (payload.project_id,)).fetchone()
+    if proj is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if payload.parent_id is not None:
+        parent = conn.execute(
+            "SELECT id, project_id FROM todos WHERE id = ?", (payload.parent_id,)
+        ).fetchone()
+        if parent is None:
+            raise HTTPException(status_code=404, detail="parent todo not found")
+        if parent["project_id"] != payload.project_id:
+            raise HTTPException(status_code=400, detail="parent todo belongs to a different project")
+
+    now = _now()
+    order = (
+        payload.display_order
+        if payload.display_order is not None
+        else _next_display_order(
+            "todos",
+            "project_id = ? AND parent_id IS ?",
+            (payload.project_id, payload.parent_id),
+        )
+    )
+    cur = conn.execute(
+        "INSERT INTO todos "
+        "(project_id, parent_id, text, is_blocker, is_followup, in_progress, display_order, "
+        " completed, completed_at, notes, paths_json, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)",
+        (
+            payload.project_id,
+            payload.parent_id,
+            payload.text.strip(),
+            int(payload.is_blocker),
+            int(payload.is_followup),
+            int(payload.in_progress),
+            order,
+            payload.notes,
+            json.dumps(payload.paths),
+            now,
+            now,
+        ),
+    )
+    tid = cur.lastrowid
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (tid,)).fetchone()
+    return _todo_to_dict(row)
+
+
+@app.patch("/api/todos/{todo_id}")
+async def update_todo(todo_id: int, payload: TodoUpdate):
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="todo not found")
+
+    fields: list[str] = []
+    values: list[Any] = []
+    if payload.text is not None:
+        fields.append("text = ?")
+        values.append(payload.text.strip())
+    if payload.parent_id_set:
+        fields.append("parent_id = ?")
+        values.append(payload.parent_id)
+    if payload.is_blocker is not None:
+        fields.append("is_blocker = ?")
+        values.append(int(payload.is_blocker))
+    if payload.is_followup is not None:
+        fields.append("is_followup = ?")
+        values.append(int(payload.is_followup))
+    if payload.in_progress is not None:
+        fields.append("in_progress = ?")
+        values.append(int(payload.in_progress))
+    if payload.display_order is not None:
+        fields.append("display_order = ?")
+        values.append(payload.display_order)
+    if payload.completed is not None:
+        fields.append("completed = ?")
+        values.append(int(payload.completed))
+        if payload.completed and not row["completed"]:
+            fields.append("completed_at = ?")
+            values.append(_now())
+            fields.append("in_progress = ?")
+            values.append(0)
+        elif not payload.completed:
+            fields.append("completed_at = ?")
+            values.append(None)
+    if payload.notes is not None:
+        fields.append("notes = ?")
+        values.append(payload.notes)
+    if payload.paths is not None:
+        fields.append("paths_json = ?")
+        values.append(json.dumps(payload.paths))
+
+    if not fields:
+        return _todo_to_dict(row)
+
+    fields.append("updated_at = ?")
+    values.append(_now())
+    values.append(todo_id)
+    conn.execute(
+        f"UPDATE todos SET {', '.join(fields)} WHERE id = ?",
+        values,
+    )
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    return _todo_to_dict(row)
+
+
+@app.delete("/api/todos/{todo_id}", status_code=204)
+async def delete_todo(todo_id: int):
+    conn = db.get_conn()
+    cur = conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="todo not found")
+    return None
+
+
+@app.post("/api/todos/{todo_id}/complete")
+async def complete_todo(todo_id: int):
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="todo not found")
+    now = _now()
+    conn.execute(
+        "UPDATE todos SET completed = 1, in_progress = 0, completed_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, todo_id),
+    )
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    return _todo_to_dict(row)
+
+
+@app.post("/api/todos/{todo_id}/uncomplete")
+async def uncomplete_todo(todo_id: int):
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="todo not found")
+    now = _now()
+    conn.execute(
+        "UPDATE todos SET completed = 0, completed_at = NULL, updated_at = ? WHERE id = ?",
+        (now, todo_id),
+    )
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    return _todo_to_dict(row)
+
+
+# ---------------------------------------------------------------------------
+# API: stats (data ready for v2 progress viz)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/stats")
+async def stats(since: Optional[str] = Query(default=None)):
+    """
+    Return completed-todo counts. v1 just exposes the data; v2 will render it.
+
+    `since` is an ISO date or datetime; defaults to 30 days ago.
+    """
+    conn = db.get_conn()
+    if since is None:
+        from datetime import timedelta
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+
+    rows = conn.execute(
+        "SELECT date(completed_at) AS day, project_id, COUNT(*) AS n "
+        "FROM todos "
+        "WHERE completed = 1 AND completed_at IS NOT NULL "
+        "  AND date(completed_at) >= date(?) "
+        "GROUP BY day, project_id "
+        "ORDER BY day, project_id",
+        (since,),
+    ).fetchall()
+
+    by_day: dict[str, dict[str, int]] = {}
+    for r in rows:
+        by_day.setdefault(r["day"], {})[str(r["project_id"])] = int(r["n"])
+
+    total = conn.execute(
+        "SELECT COUNT(*) AS n FROM todos "
+        "WHERE completed = 1 AND date(completed_at) >= date(?)",
+        (since,),
+    ).fetchone()["n"]
+
+    return {
+        "since": since,
+        "total_completed": int(total),
+        "by_day": by_day,
+    }

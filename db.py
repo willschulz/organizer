@@ -1,0 +1,135 @@
+"""
+Organizer -- SQLite layer.
+
+Single-file connection helper plus schema migration on startup.
+
+Schema is small: two tables (projects, todos) with parent_id on todos for
+future nested rendering. No Alembic, no migrations directory -- if the
+schema needs to change later, add a new IF-NOT-EXISTS or ALTER below the
+initial CREATE block.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
+
+DB_PATH = Path(os.environ.get(
+    "ORGANIZER_DB_PATH",
+    str(Path(__file__).resolve().parent / "data" / "organizer.db"),
+))
+
+CATEGORIES = (
+    "near_publication",
+    "in_development",
+    "early_stage",
+    "side_project",
+)
+
+SCHEMA_SQL = f"""
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS projects (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  name            TEXT    NOT NULL,
+  category        TEXT    NOT NULL CHECK (category IN
+                    {tuple(CATEGORIES)}),
+  display_order   INTEGER NOT NULL DEFAULT 0,
+  deadline        TEXT,
+  notes           TEXT    NOT NULL DEFAULT '',
+  paths_json      TEXT    NOT NULL DEFAULT '[]',
+  archived        INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT    NOT NULL,
+  updated_at      TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS todos (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  parent_id       INTEGER REFERENCES todos(id) ON DELETE CASCADE,
+  text            TEXT    NOT NULL,
+  is_blocker      INTEGER NOT NULL DEFAULT 0,
+  is_followup     INTEGER NOT NULL DEFAULT 0,
+  display_order   INTEGER NOT NULL DEFAULT 0,
+  in_progress     INTEGER NOT NULL DEFAULT 0,
+  completed       INTEGER NOT NULL DEFAULT 0,
+  completed_at    TEXT,
+  notes           TEXT    NOT NULL DEFAULT '',
+  paths_json      TEXT    NOT NULL DEFAULT '[]',
+  created_at      TEXT    NOT NULL,
+  updated_at      TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_todos_project      ON todos(project_id);
+CREATE INDEX IF NOT EXISTS idx_todos_parent       ON todos(parent_id);
+CREATE INDEX IF NOT EXISTS idx_todos_completed_at ON todos(completed_at);
+"""
+
+
+def _connect(path: Path = DB_PATH) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+_conn: sqlite3.Connection | None = None
+
+
+def get_conn() -> sqlite3.Connection:
+    """Return the lazily-initialized module-level connection."""
+    global _conn
+    if _conn is None:
+        _conn = _connect()
+    return _conn
+
+
+def _migrate_add_todo_context(conn: sqlite3.Connection) -> None:
+    """Idempotent: add notes + paths_json to existing todos tables."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(todos)").fetchall()}
+    if "notes" not in cols:
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN notes TEXT NOT NULL DEFAULT ''"
+        )
+    if "paths_json" not in cols:
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN paths_json TEXT NOT NULL DEFAULT '[]'"
+        )
+
+
+def _migrate_add_todo_inprogress(conn: sqlite3.Connection) -> None:
+    """Idempotent: add in_progress column to existing todos tables."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(todos)").fetchall()}
+    if "in_progress" not in cols:
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN in_progress INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def init_schema() -> None:
+    """Apply schema (idempotent)."""
+    conn = get_conn()
+    conn.executescript(SCHEMA_SQL)
+    _migrate_add_todo_context(conn)
+    _migrate_add_todo_inprogress(conn)
+
+
+@contextmanager
+def transaction() -> Iterator[sqlite3.Connection]:
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN")
+        yield conn
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def row_to_dict(row: sqlite3.Row | None) -> dict | None:
+    return dict(row) if row is not None else None

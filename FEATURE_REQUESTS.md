@@ -6,7 +6,7 @@ Organizer app's todo list (in the app itself) when prioritized.
 
 ---
 
-## FR-001 — Drag-to-reorder todos
+## FR-001 — Drag-to-reorder todos *(implemented)*
 
 **Summary:** Drag todo items within a card to reorder them.
 
@@ -35,6 +35,10 @@ reorder is the natural interaction for a todo list.
 
 **Priority:** Medium — the current fixed order is livable but reordering
 is a frequent enough need to be worth building.
+
+**Status:** Implemented alongside nested-todo drag (FR-003). SortableJS handles
+drag-to-reorder, drag-to-nest, and drag-to-unnest in one pass. Touch/mobile
+included via SortableJS fallback.
 
 ---
 
@@ -77,3 +81,21 @@ edited is more salient than one that hasn't been touched in weeks.
 **Priority:** High — deadline sorting is the whole point of setting a
 deadline on a card; activity-based ordering makes the no-deadline group
 self-organizing.
+
+---
+
+## FR-003 — "Just-discovered blocker" user story *(handled by nesting)*
+
+**Summary:** While working on a todo, you discover a new prerequisite (e.g. the
+longer-window cap sweep is now blocked by GCP-box OOM). You need a way to record
+this without losing context on the in-flight task.
+
+**Resolution:** The nested-todo UI handles this natively. Add a sub-todo under
+the in-flight parent todo to represent the newly-discovered blocker. The parent
+todo stays open; the sub-todo is the concrete next action. "What is blocking
+this?" is answered by "which sub-todos remain incomplete?", without requiring a
+separate flag or a flat-list position change.
+
+No separate feature request is needed — this is precisely the use case that
+motivated implementing nesting. Cross-reference: Organizer todo #52 (nested-todo
+UI was already tracked before this user story was surfaced).

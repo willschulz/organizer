@@ -59,6 +59,16 @@ def _todo_to_dict(row) -> dict[str, Any]:
     return d
 
 
+def _root_is_followup(conn, parent_id: int) -> bool:
+    """Walk up the parent chain to find the root todo's is_followup value."""
+    row = conn.execute("SELECT parent_id, is_followup FROM todos WHERE id = ?", (parent_id,)).fetchone()
+    if row is None:
+        return False
+    if row["parent_id"] is None:
+        return bool(row["is_followup"])
+    return _root_is_followup(conn, row["parent_id"])
+
+
 def _next_display_order(table: str, where_sql: str, params: tuple) -> int:
     cur = db.get_conn().execute(
         f"SELECT COALESCE(MAX(display_order), -1) + 1 AS next FROM {table} WHERE {where_sql}",
@@ -103,6 +113,12 @@ class ProjectUpdate(BaseModel):
         if v is not None and v not in db.CATEGORIES:
             raise ValueError(f"category must be one of {db.CATEGORIES}")
         return v
+
+
+class TodoReorderItem(BaseModel):
+    id: int
+    parent_id: Optional[int] = None
+    display_order: int
 
 
 class TodoCreate(BaseModel):
@@ -199,7 +215,7 @@ async def list_projects(include_archived: bool = Query(default=False)):
     ).fetchall()
     todo_rows = conn.execute(
         "SELECT * FROM todos ORDER BY project_id, "
-        "is_followup, completed, is_blocker DESC, in_progress DESC, display_order, id"
+        "is_followup, (parent_id IS NOT NULL), display_order, id"
     ).fetchall()
 
     todos_by_project: dict[int, list[dict]] = {}
@@ -309,7 +325,7 @@ def _project_with_todos(project_id: int) -> dict[str, Any]:
     proj = _project_to_dict(pr)
     todos = conn.execute(
         "SELECT * FROM todos WHERE project_id = ? "
-        "ORDER BY is_followup, completed, is_blocker DESC, in_progress DESC, display_order, id",
+        "ORDER BY is_followup, (parent_id IS NOT NULL), display_order, id",
         (project_id,),
     ).fetchall()
     proj["todos"] = [_todo_to_dict(t) for t in todos]
@@ -326,6 +342,8 @@ async def create_todo(payload: TodoCreate):
     proj = conn.execute("SELECT id FROM projects WHERE id = ?", (payload.project_id,)).fetchone()
     if proj is None:
         raise HTTPException(status_code=404, detail="project not found")
+    # Determine the effective is_followup: children inherit from their root ancestor.
+    effective_followup = payload.is_followup
     if payload.parent_id is not None:
         parent = conn.execute(
             "SELECT id, project_id FROM todos WHERE id = ?", (payload.parent_id,)
@@ -334,6 +352,7 @@ async def create_todo(payload: TodoCreate):
             raise HTTPException(status_code=404, detail="parent todo not found")
         if parent["project_id"] != payload.project_id:
             raise HTTPException(status_code=400, detail="parent todo belongs to a different project")
+        effective_followup = _root_is_followup(conn, payload.parent_id)
 
     now = _now()
     order = (
@@ -355,7 +374,7 @@ async def create_todo(payload: TodoCreate):
             payload.parent_id,
             payload.text.strip(),
             int(payload.is_blocker),
-            int(payload.is_followup),
+            int(effective_followup),
             int(payload.in_progress),
             order,
             payload.notes,
@@ -384,6 +403,11 @@ async def update_todo(todo_id: int, payload: TodoUpdate):
     if payload.parent_id_set:
         fields.append("parent_id = ?")
         values.append(payload.parent_id)
+        # When reparenting, inherit is_followup from the new root ancestor.
+        if payload.parent_id is not None:
+            inherited = _root_is_followup(conn, payload.parent_id)
+            fields.append("is_followup = ?")
+            values.append(int(inherited))
     if payload.is_blocker is not None:
         fields.append("is_blocker = ?")
         values.append(int(payload.is_blocker))
@@ -435,6 +459,50 @@ async def delete_todo(todo_id: int):
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="todo not found")
     return None
+
+
+@app.post("/api/todos/reorder")
+async def reorder_todos(updates: list[TodoReorderItem]):
+    """
+    Atomically update parent_id and display_order for a set of todos.
+    All todos must belong to the same project. Frontend sends the full
+    card's worth of todos after each drag, re-indexed in 10s gaps.
+    """
+    if not updates:
+        return {"updated": 0}
+    conn = db.get_conn()
+
+    # Validate all ids exist and belong to the same project.
+    ids = [u.id for u in updates]
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT id, project_id FROM todos WHERE id IN ({placeholders})", ids
+    ).fetchall()
+    found = {r["id"]: r["project_id"] for r in rows}
+    if len(found) != len(ids):
+        missing = set(ids) - set(found)
+        raise HTTPException(status_code=404, detail=f"todo ids not found: {missing}")
+    project_ids = set(found.values())
+    if len(project_ids) > 1:
+        raise HTTPException(status_code=400, detail="all todos must belong to the same project")
+
+    now = _now()
+    with db.transaction() as txn:
+        for u in updates:
+            txn.execute(
+                "UPDATE todos SET parent_id = ?, display_order = ?, updated_at = ? WHERE id = ?",
+                (u.parent_id, u.display_order, now, u.id),
+            )
+        # When a todo is reparented, sync its is_followup to the root ancestor.
+        for u in updates:
+            if u.parent_id is not None:
+                inherited = _root_is_followup(txn, u.parent_id)
+                txn.execute(
+                    "UPDATE todos SET is_followup = ? WHERE id = ?",
+                    (int(inherited), u.id),
+                )
+
+    return {"updated": len(updates)}
 
 
 @app.post("/api/todos/{todo_id}/complete")

@@ -8,6 +8,7 @@
 <meta name="theme-color" content="#fbf9f4" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#161614" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="/manifest.webmanifest">
+<script src="/static/vendor/Sortable.min.js"></script>
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Organizer</title>
 <style>
@@ -286,10 +287,10 @@
 
   .todo {
     display: grid;
-    grid-template-columns: 24px 1fr auto;
+    grid-template-columns: 14px 24px 1fr auto;
     align-items: start;
-    gap: 8px;
-    padding: 7px 14px;
+    gap: 6px;
+    padding: 7px 14px 7px 10px;
     border-bottom: 1px solid var(--border-soft);
     position: relative;
   }
@@ -297,7 +298,7 @@
   .todo.is-blocker {
     background: var(--blocker-bg);
     border-left: 3px solid var(--blocker-bar);
-    padding-left: 11px;
+    padding-left: 7px;
   }
   .todo.completed {
     opacity: 0.45;
@@ -344,7 +345,7 @@
   .todo.in-progress:not(.completed) {
     background: var(--inprogress-bg);
     border-left: 3px solid var(--inprogress-bar);
-    padding-left: 11px;
+    padding-left: 7px;
   }
   .todo.is-blocker.in-progress:not(.completed) {
     background: color-mix(in srgb, var(--inprogress-bg) 60%, var(--blocker-bg));
@@ -695,6 +696,57 @@
     transform: translateX(-50%) translateY(0);
   }
 
+  /* ---- Nested sub-todos ---- */
+  .subtodos {
+    margin-left: 10px;
+    padding-left: 8px;
+    border-left: 1.5px solid var(--border-soft);
+  }
+  /* Visible drop slot when dragging: empty containers stay visible */
+  .subtodos-drop-hint {
+    min-height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--text-faint);
+    font-style: italic;
+    padding: 4px 14px;
+    border-radius: var(--radius-sm);
+    border: 1px dashed transparent;
+    transition: border-color .15s, background .15s;
+  }
+  .card.drag-active .subtodos-drop-hint {
+    border-color: var(--border);
+    background: var(--bg-hover);
+  }
+
+  /* Drag handle affordance */
+  .todo-drag-handle {
+    cursor: grab;
+    color: var(--text-faint);
+    display: flex;
+    align-items: center;
+    padding: 2px 2px 2px 0;
+    opacity: 0;
+    transition: opacity .15s;
+    flex-shrink: 0;
+    align-self: start;
+    margin-top: 4px;
+  }
+  .todo-drag-handle svg { width: 12px; height: 12px; }
+  .todo:hover .todo-drag-handle,
+  .todo:focus-within .todo-drag-handle { opacity: 0.5; }
+  .todo-drag-handle:hover { opacity: 1 !important; color: var(--text-muted); }
+
+  /* SortableJS ghost/chosen states */
+  .sortable-ghost {
+    opacity: 0.35;
+    background: var(--bg-hover) !important;
+    border-radius: var(--radius-sm);
+  }
+  .sortable-chosen { cursor: grabbing; }
+
   /* Narrow screens: tighter padding */
   @media (max-width: 640px) {
     .row-header  { padding-left: 16px; padding-right: 16px; }
@@ -902,9 +954,12 @@ function svgIcon(d, opts = {}) {
     svg.setAttribute('stroke-linejoin', 'round');
   }
   if (opts.size) { svg.setAttribute('width', opts.size); svg.setAttribute('height', opts.size); }
-  const path = document.createElementNS(ns, 'path');
-  path.setAttribute('d', d);
-  svg.appendChild(path);
+  // d can be a single path string or a semicolon-separated list of path strings
+  for (const segment of d.split(';')) {
+    const path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', segment.trim());
+    svg.appendChild(path);
+  }
   return svg;
 }
 const ICONS = {
@@ -914,6 +969,7 @@ const ICONS = {
   chevron: 'M9 6l6 6-6 6',
   note:    'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5M9 13h6M9 17h6',
   play:    'M6 4l12 8-12 8V4z',
+  grip:    'M8 6h.01M8 12h.01M8 18h.01;M16 6h.01M16 12h.01M16 18h.01',
 };
 
 function render() {
@@ -976,6 +1032,86 @@ function renderAddCard(category) {
   ]);
 }
 
+/**
+ * Build a nested tree from the flat todos array using parent_id.
+ * Returns an array of root nodes; each node has a `children` array.
+ */
+function buildTree(todos) {
+  const byId = {};
+  for (const t of todos) byId[t.id] = { ...t, children: [] };
+  const roots = [];
+  for (const t of todos) {
+    if (t.parent_id != null && byId[t.parent_id]) {
+      byId[t.parent_id].children.push(byId[t.id]);
+    } else {
+      roots.push(byId[t.id]);
+    }
+  }
+  return roots;
+}
+
+/**
+ * Walk the card DOM and collect {id, parent_id, display_order} for every todo,
+ * re-indexing siblings in steps of 10. Used by persistDrag.
+ */
+function collectCardOrder(card) {
+  const updates = [];
+
+  function walk(container, parentId) {
+    const rows = Array.from(container.children).filter(n => n.dataset && n.dataset.todoId);
+    rows.forEach((row, i) => {
+      const id = Number(row.dataset.todoId);
+      updates.push({ id, parent_id: parentId ?? null, display_order: i * 10 });
+      const sub = row.querySelector(':scope > .subtodos-wrap > .subtodos');
+      if (sub) walk(sub, id);
+    });
+  }
+
+  const mainList = card.querySelector('.todos');
+  if (mainList) walk(mainList, null);
+
+  const followupList = card.querySelector('.followups-list');
+  if (followupList) walk(followupList, null);
+
+  return updates;
+}
+
+async function persistDrag(card) {
+  const updates = collectCardOrder(card);
+  if (!updates.length) return;
+  try {
+    await api('POST', '/api/todos/reorder', updates);
+    await reload();
+  } catch (err) {
+    toast(err.message);
+    await reload();
+  }
+}
+
+/**
+ * Initialize SortableJS on a container element.
+ * group: string shared by all containers that can exchange items.
+ * card: the card DOM element used for persistDrag.
+ */
+function initSortable(container, group, card) {
+  Sortable.create(container, {
+    group,
+    animation: 120,
+    handle: '.todo-drag-handle',
+    filter: '.subtodos-drop-hint',
+    preventOnFilter: false,
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    fallbackOnBody: true,
+    swapThreshold: 0.65,
+    onStart() { card.classList.add('drag-active'); },
+    onEnd()   {
+      card.classList.remove('drag-active');
+      persistDrag(card);
+    },
+  });
+}
+
 function renderCard(project) {
   const card = el('div', { class: 'card', dataset: { projectId: project.id } });
 
@@ -1007,20 +1143,27 @@ function renderCard(project) {
 
   card.appendChild(el('div', { class: 'card-header' }, [title, deadlineEl, cog]));
 
-  // Todos
+  // Build tree and split into main vs followup.
   const todos = project.todos || [];
-  const blockers = todos.filter(t => !t.is_followup && t.is_blocker);
-  const active   = todos.filter(t => !t.is_followup && !t.is_blocker);
-  const followups = todos.filter(t => t.is_followup);
+  const mainTodos    = todos.filter(t => !t.is_followup);
+  const followupTodos = todos.filter(t => t.is_followup);
 
+  const mainRoots    = buildTree(mainTodos);
+  const followupRoots = buildTree(followupTodos);
+
+  const mainGroup    = `todos-${project.id}`;
+  const followupGroup = `followups-${project.id}`;
+
+  // Main todo list
   const todoList = el('div', { class: 'todos' });
-  for (const t of [...blockers, ...active]) {
-    todoList.appendChild(renderTodo(t));
+  for (const node of mainRoots) {
+    todoList.appendChild(renderTodoNode(node, mainGroup, card));
   }
   card.appendChild(todoList);
+  initSortable(todoList, mainGroup, card);
 
   // Followups (collapsible)
-  if (followups.length || true) {
+  if (followupTodos.length > 0) {
     const isOpen = state.followupsOpen.has(String(project.id));
     const toggleBtn = el('button', {
       class: `followups-toggle ${isOpen ? 'open' : ''}`,
@@ -1034,18 +1177,15 @@ function renderCard(project) {
       },
     }, [
       el('span', { class: 'chev' }, ['›']),
-      el('span', {}, [`Then… (${followups.length})`]),
+      el('span', {}, [`Then… (${followupTodos.length})`]),
     ]);
-    if (followups.length === 0) {
-      // Hide the toggle entirely when there are no followups -- but keep an "add followup" affordance
-      // via the add-todo input below. For now, only show if there are followups:
-      // (no-op; we'll actually skip the toggle).
-    } else {
-      card.appendChild(toggleBtn);
-      const list = el('div', { class: `followups-list ${isOpen ? 'open' : ''}` });
-      for (const t of followups) list.appendChild(renderTodo(t));
-      card.appendChild(list);
+    card.appendChild(toggleBtn);
+    const list = el('div', { class: `followups-list ${isOpen ? 'open' : ''}` });
+    for (const node of followupRoots) {
+      list.appendChild(renderTodoNode(node, followupGroup, card));
     }
+    card.appendChild(list);
+    initSortable(list, followupGroup, card);
   }
 
   // Add-todo input
@@ -1058,8 +1198,16 @@ function todoHasContext(t) {
   return (t.notes && t.notes.trim()) || (Array.isArray(t.paths) && t.paths.length > 0);
 }
 
-function renderTodo(t) {
+/**
+ * Render a single todo row plus its children recursively.
+ * node: a todo object augmented with a `children` array (from buildTree).
+ * group: the SortableJS group string for this subtree's parent container.
+ * card: the card DOM element, needed for persistDrag.
+ */
+function renderTodoNode(node, group, card) {
+  const t = node;
   const hasCtx = todoHasContext(t);
+
   const row = el('div', {
     class: [
       'todo',
@@ -1071,6 +1219,12 @@ function renderTodo(t) {
     dataset: { todoId: t.id },
   });
 
+  // Drag handle (column 1)
+  const handle = el('div', { class: 'todo-drag-handle', title: 'Drag to reorder or nest' });
+  handle.appendChild(svgIcon(ICONS.grip, { size: 12 }));
+  row.appendChild(handle);
+
+  // Checkbox (column 2)
   const check = el('input', {
     class: 'todo-check',
     type: 'checkbox',
@@ -1079,9 +1233,7 @@ function renderTodo(t) {
       try {
         const result = await api('POST', `/api/todos/${t.id}/${want ? 'complete' : 'uncomplete'}`);
         Object.assign(t, result);
-        // Rerender just this row by replacing it
-        const fresh = renderTodo(t);
-        row.replaceWith(fresh);
+        row.replaceWith(renderTodoNode(t, group, card));
       } catch (err) {
         e.target.checked = !want;
         toast(err.message);
@@ -1089,7 +1241,9 @@ function renderTodo(t) {
     },
   });
   if (t.completed) check.checked = true;
+  row.appendChild(check);
 
+  // Text (column 3)
   const text = el('div', {
     class: 'todo-text',
     contenteditable: 'true',
@@ -1097,7 +1251,9 @@ function renderTodo(t) {
     onblur: (e) => commitTodoText(t, e.target.textContent),
     onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } },
   }, [t.text]);
+  row.appendChild(text);
 
+  // Right-hand actions (column 4)
   const right = el('div', { class: 'todo-right' });
 
   if (!t.completed) {
@@ -1110,7 +1266,7 @@ function renderTodo(t) {
         try {
           const result = await api('PATCH', `/api/todos/${t.id}`, { in_progress: !t.in_progress });
           Object.assign(t, result);
-          row.replaceWith(renderTodo(t));
+          row.replaceWith(renderTodoNode({ ...t, children: node.children }, group, card));
         } catch (err) { toast(err.message); }
       },
     });
@@ -1136,7 +1292,7 @@ function renderTodo(t) {
     'aria-label': t.is_blocker ? 'Unmark as blocker' : 'Mark as blocker',
     onclick: async () => {
       try {
-        const result = await api('PATCH', `/api/todos/${t.id}`, { is_blocker: !t.is_blocker });
+        await api('PATCH', `/api/todos/${t.id}`, { is_blocker: !t.is_blocker });
         await reload();
       } catch (err) { toast(err.message); }
     },
@@ -1161,10 +1317,24 @@ function renderTodo(t) {
   actions.appendChild(delBtn);
 
   right.appendChild(actions);
-
-  row.appendChild(check);
-  row.appendChild(text);
   row.appendChild(right);
+
+  // Children subtodos container (spans all columns via a wrapper below the row grid)
+  if (node.children && node.children.length > 0 || true) {
+    const subtodosContainer = el('div', { class: 'subtodos' });
+    const dropHint = el('div', { class: 'subtodos-drop-hint' }, ['drop here to nest']);
+    subtodosContainer.appendChild(dropHint);
+    for (const child of (node.children || [])) {
+      subtodosContainer.appendChild(renderTodoNode(child, group, card));
+    }
+    const wrap = el('div', {
+      class: 'subtodos-wrap',
+      style: 'grid-column: 1 / -1;',
+    }, [subtodosContainer]);
+    row.appendChild(wrap);
+    initSortable(subtodosContainer, group, card);
+  }
+
   return row;
 }
 

@@ -702,23 +702,9 @@
     padding-left: 8px;
     border-left: 1.5px solid var(--border-soft);
   }
-  /* Visible drop slot when dragging: empty containers stay visible */
-  .subtodos-drop-hint {
-    min-height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 11px;
-    color: var(--text-faint);
-    font-style: italic;
-    padding: 4px 14px;
-    border-radius: var(--radius-sm);
-    border: 1px dashed transparent;
-    transition: border-color .15s, background .15s;
-  }
-  .card.drag-active .subtodos-drop-hint {
-    border-color: var(--border);
-    background: var(--bg-hover);
+  /* Give empty subtodos containers a drop zone during drag */
+  .card.drag-active .subtodos {
+    min-height: 18px;
   }
 
   /* Drag handle affordance */
@@ -739,12 +725,33 @@
   .todo:focus-within .todo-drag-handle { opacity: 0.5; }
   .todo-drag-handle:hover { opacity: 1 !important; color: var(--text-muted); }
 
-  /* SortableJS ghost/chosen states */
+  /* SortableJS insertion-line ghost (placeholder between items) */
   .sortable-ghost {
-    opacity: 0.35;
-    background: var(--bg-hover) !important;
-    border-radius: var(--radius-sm);
+    display: block !important;
+    height: 2px !important;
+    min-height: 2px !important;
+    max-height: 2px !important;
+    padding: 0 !important;
+    margin: 1px 0 !important;
+    border: none !important;
+    border-radius: 1px !important;
+    background: var(--accent) !important;
+    overflow: hidden;
+    opacity: 1 !important;
   }
+  .sortable-ghost > * { display: none !important; }
+
+  /* Nest-target highlight: the item the dragged todo will nest under */
+  .todo.drag-target {
+    background: var(--bg-hover) !important;
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: var(--radius-sm);
+    transition: background .1s, outline-color .1s;
+  }
+  .todo.drag-target.is-blocker { background: color-mix(in srgb, var(--bg-hover) 70%, var(--blocker-bg)) !important; }
+  .todo.drag-target.in-progress { background: color-mix(in srgb, var(--bg-hover) 70%, var(--inprogress-bg)) !important; }
+
   .sortable-chosen { cursor: grabbing; }
 
   /* Narrow screens: tighter padding */
@@ -1096,17 +1103,32 @@ async function persistDrag(card) {
 function initSortable(container, group, card) {
   Sortable.create(container, {
     group,
-    animation: 120,
+    animation: 100,
     handle: '.todo-drag-handle',
-    filter: '.subtodos-drop-hint',
-    preventOnFilter: false,
     ghostClass: 'sortable-ghost',
     chosenClass: 'sortable-chosen',
     fallbackOnBody: true,
-    swapThreshold: 0.65,
-    onStart() { card.classList.add('drag-active'); },
-    onEnd()   {
+    swapThreshold: 0.3,
+    onStart() {
+      card.classList.add('drag-active');
+    },
+    onMove(evt) {
+      // When the dragged item moves into a .subtodos container, highlight its
+      // parent .todo to signal "will nest here". Clear on any other move.
+      const toList = evt.to;
+      const allTodos = card.querySelectorAll('.todo');
+      allTodos.forEach(t => t.classList.remove('drag-target'));
+      if (toList.classList.contains('subtodos')) {
+        const wrap = toList.closest('.subtodos-wrap');
+        const parentTodo = wrap ? wrap.parentElement : null;
+        if (parentTodo && parentTodo.classList.contains('todo')) {
+          parentTodo.classList.add('drag-target');
+        }
+      }
+    },
+    onEnd() {
       card.classList.remove('drag-active');
+      card.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
       persistDrag(card);
     },
   });
@@ -1320,10 +1342,8 @@ function renderTodoNode(node, group, card) {
   row.appendChild(right);
 
   // Children subtodos container (spans all columns via a wrapper below the row grid)
-  if (node.children && node.children.length > 0 || true) {
+  {
     const subtodosContainer = el('div', { class: 'subtodos' });
-    const dropHint = el('div', { class: 'subtodos-drop-hint' }, ['drop here to nest']);
-    subtodosContainer.appendChild(dropHint);
     for (const child of (node.children || [])) {
       subtodosContainer.appendChild(renderTodoNode(child, group, card));
     }

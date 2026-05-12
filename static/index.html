@@ -113,8 +113,36 @@
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--text);
-    flex: 1;
+    flex: 0 0 auto;
   }
+
+  /* ---- Progress heatmap ---- */
+  #heatmap {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 0 5px 14px;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to right, black 55%, transparent 100%);
+    mask-image: linear-gradient(to right, black 55%, transparent 100%);
+  }
+  .heatmap-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .hm-0 { background: var(--border); }
+  .hm-1 { background: color-mix(in srgb, var(--green) 40%, transparent); }
+  .hm-2 { background: color-mix(in srgb, var(--green) 70%, transparent); }
+  .hm-3 { background: var(--green); }
+  .hm-today { outline: 1.5px solid var(--text-faint); outline-offset: 1.5px; }
+  .hm-today.hm-1,
+  .hm-today.hm-2,
+  .hm-today.hm-3 { outline-color: var(--green); }
   #status {
     font-size: 12px;
     color: var(--text-faint);
@@ -721,13 +749,8 @@
 <header id="topbar">
   <div id="topbar-inner">
     <div id="title">Organizer</div>
+    <div id="heatmap"></div>
     <span id="status"></span>
-    <button class="btn-icon" id="btn-add-project" title="New project (any category)" aria-label="New project">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <line x1="12" y1="5" x2="12" y2="19"/>
-        <line x1="5" y1="12" x2="19" y2="12"/>
-      </svg>
-    </button>
   </div>
 </header>
 
@@ -800,6 +823,12 @@ const CATEGORY_LABELS = {
 };
 const CATEGORY_ORDER = ['near_publication', 'in_development', 'early_stage', 'side_project'];
 
+const RETIRE_MS = 24 * 60 * 60 * 1000;
+function isRetired(t) {
+  return t.completed && t.completed_at &&
+    (Date.now() - new Date(t.completed_at).getTime() > RETIRE_MS);
+}
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -809,6 +838,7 @@ let state = {
   followupsOpen: new Set(loadOpenFollowups()),  // set of project ids (strings)
   modalProjectId: null,
   modalTodoId: null,        // null => modal is in project mode
+  stats: { by_day: {} },
 };
 
 function loadOpenFollowups() {
@@ -1124,7 +1154,8 @@ function renderCard(project) {
   card.appendChild(el('div', { class: 'card-header' }, [title, deadlineEl, cog]));
 
   // Build tree and split into main vs followup.
-  const todos = project.todos || [];
+  // Retired todos (completed > 24h ago) are hidden; their children float to root.
+  const todos = (project.todos || []).filter(t => !isRetired(t));
   const mainTodos    = todos.filter(t => !t.is_followup);
   const followupTodos = todos.filter(t => t.is_followup);
 
@@ -1505,7 +1536,39 @@ fDelete.addEventListener('click', async () => {
   } catch (err) { toast(err.message); }
 });
 
-document.getElementById('btn-add-project').addEventListener('click', () => openProjectModal(null));
+// ---------------------------------------------------------------------------
+// Heatmap
+// ---------------------------------------------------------------------------
+
+function renderHeatmap() {
+  const container = document.getElementById('heatmap');
+  if (!container) return;
+  const byDay = (state.stats && state.stats.by_day) || {};
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const NUM_DAYS = 70;
+  const dots = [];
+  for (let daysAgo = 0; daysAgo < NUM_DAYS; daysAgo++) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - daysAgo);
+    const iso = date.toISOString().slice(0, 10);
+    const dayData = byDay[iso];
+    const count = dayData
+      ? Object.values(dayData).reduce((s, v) => s + v, 0)
+      : 0;
+    const intensity = count === 0 ? 'hm-0'
+                    : count === 1 ? 'hm-1'
+                    : count <= 3  ? 'hm-2'
+                    :               'hm-3';
+    const dot = document.createElement('div');
+    dot.className = 'heatmap-dot ' + intensity + (daysAgo === 0 ? ' hm-today' : '');
+    dots.push(dot);
+  }
+
+  container.replaceChildren(...dots);
+}
 
 // ---------------------------------------------------------------------------
 // Bootstrapping
@@ -1514,11 +1577,17 @@ document.getElementById('btn-add-project').addEventListener('click', () => openP
 async function reload() {
   setStatus('Loading…');
   try {
-    const data = await api('GET', '/api/projects');
+    const since70 = new Date(Date.now() - 70 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const [data, statsData] = await Promise.all([
+      api('GET', '/api/projects'),
+      api('GET', `/api/stats?since=${since70}`).catch(() => ({ by_day: {} })),
+    ]);
     state.projects = data.projects || {};
+    state.stats = statsData;
     for (const cat of CATEGORY_ORDER) state.projects[cat] = state.projects[cat] || [];
     setStatus('');
     render();
+    renderHeatmap();
   } catch (err) {
     setStatus('offline');
     toast(err.message);

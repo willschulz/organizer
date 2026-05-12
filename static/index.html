@@ -528,6 +528,27 @@
     gap: 6px;
   }
   .add-todo-row input { flex: 1; }
+  .add-todo-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-faint);
+    cursor: grab;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    flex-shrink: 0;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  .add-todo-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-faint); }
+  .add-todo-btn:active { cursor: grabbing; }
+  .add-todo-btn svg { width: 12px; height: 12px; }
+  /* Drag-to-place indicators */
+  .todo.add-drop-before { box-shadow: 0 -2px 0 var(--accent); }
+  .todo.add-drop-after  { box-shadow: 0 2px 0 var(--accent); }
 
   /* ---- Empty state for add-card ---- */
   .add-card-inner {
@@ -1262,7 +1283,7 @@ function renderCard(project) {
   }
 
   // Add-todo input
-  card.appendChild(renderAddTodoInput(project));
+  card.appendChild(renderAddTodoInput(project, card));
 
   return card;
 }
@@ -1408,7 +1429,7 @@ function renderTodoNode(node, group, card) {
   return row;
 }
 
-function renderAddTodoInput(project) {
+function renderAddTodoInput(project, card) {
   const wrap = el('div', { class: 'add-todo' });
 
   async function submit() {
@@ -1432,7 +1453,108 @@ function renderAddTodoInput(project) {
     onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } },
   });
 
-  wrap.appendChild(el('div', { class: 'add-todo-row' }, [input]));
+  const btn = el('button', {
+    type: 'button',
+    class: 'add-todo-btn',
+    title: 'Add to list — or drag to place',
+    'aria-label': 'Add todo',
+    draggable: 'true',
+    onclick: () => submit(),
+  });
+  btn.appendChild(svgIcon(ICONS.arrowUp, { size: 12 }));
+
+  // ---- Drag-to-place easter egg ----------------------------------------
+  // Uses native HTML5 DnD (independent of SortableJS) to let the user drag
+  // the button into the list and drop it at the exact desired position.
+
+  let _dropTarget = null; // { el, position: 'before'|'after' }
+
+  function clearDragIndicators() {
+    card.querySelectorAll('.add-drop-before, .add-drop-after').forEach(n => {
+      n.classList.remove('add-drop-before', 'add-drop-after');
+    });
+    _dropTarget = null;
+  }
+
+  btn.addEventListener('dragstart', (e) => {
+    const text = input.value.trim();
+    if (!text) { e.preventDefault(); return; }
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', text);
+    card.classList.add('add-todo-dragging');
+  });
+
+  btn.addEventListener('dragend', () => {
+    clearDragIndicators();
+    card.classList.remove('add-todo-dragging');
+  });
+
+  card.addEventListener('dragover', (e) => {
+    if (!card.classList.contains('add-todo-dragging')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    clearDragIndicators();
+    const todoEl = e.target.closest('.todo');
+    if (todoEl && card.contains(todoEl)) {
+      const mid = todoEl.getBoundingClientRect().top + todoEl.getBoundingClientRect().height / 2;
+      const pos = e.clientY < mid ? 'before' : 'after';
+      todoEl.classList.add(pos === 'before' ? 'add-drop-before' : 'add-drop-after');
+      _dropTarget = { el: todoEl, position: pos };
+    }
+    // If no todo under cursor, the drop will fall through to the list container
+    // and the backend will append to the end (default behaviour).
+  });
+
+  card.addEventListener('drop', async (e) => {
+    if (!card.classList.contains('add-todo-dragging')) return;
+    e.preventDefault();
+    const text = input.value.trim();
+    const dropTarget = _dropTarget;
+    clearDragIndicators();
+    card.classList.remove('add-todo-dragging');
+    if (!text) return;
+
+    const payload = { project_id: project.id, text, is_followup: false };
+
+    if (dropTarget) {
+      const todoId = Number(dropTarget.el.dataset.todoId);
+      const allTodos = (project.todos || []);
+      const target = allTodos.find(t => t.id === todoId);
+      if (target) {
+        payload.is_followup = target.is_followup;
+        if (target.parent_id != null) payload.parent_id = target.parent_id;
+        const siblings = allTodos
+          .filter(t =>
+            t.is_followup === target.is_followup &&
+            (t.parent_id ?? null) === (target.parent_id ?? null))
+          .sort((a, b) => a.display_order - b.display_order);
+        const idx = siblings.findIndex(t => t.id === todoId);
+        if (dropTarget.position === 'before') {
+          const prev = idx > 0 ? siblings[idx - 1] : null;
+          payload.display_order = prev
+            ? Math.floor((prev.display_order + target.display_order) / 2)
+            : Math.max(0, target.display_order - 5);
+        } else {
+          const next = idx < siblings.length - 1 ? siblings[idx + 1] : null;
+          payload.display_order = next
+            ? Math.floor((target.display_order + next.display_order) / 2)
+            : target.display_order + 5;
+        }
+      }
+    } else {
+      const listEl = e.target.closest('.followups-list');
+      if (listEl && card.contains(listEl)) payload.is_followup = true;
+    }
+
+    try {
+      await api('POST', '/api/todos', payload);
+      input.value = '';
+      await reload();
+    } catch (err) { toast(err.message); }
+  });
+  // ---- end drag-to-place -----------------------------------------------
+
+  wrap.appendChild(el('div', { class: 'add-todo-row' }, [input, btn]));
   return wrap;
 }
 

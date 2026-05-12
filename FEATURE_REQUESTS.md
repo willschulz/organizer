@@ -99,3 +99,86 @@ separate flag or a flat-list position change.
 No separate feature request is needed — this is precisely the use case that
 motivated implementing nesting. Cross-reference: Organizer todo #52 (nested-todo
 UI was already tracked before this user story was surfaced).
+
+---
+
+## FR-004 — Drag todo from main list into "Later…" list
+
+**Summary:** Allow dragging a todo item from the main todo list into the
+"Later…" list (and vice versa), using the same SortableJS drag mechanism
+already used for reordering within a list.
+
+**Motivation:** Currently the two lists are separate drag contexts. Promoting
+or demoting an item requires deleting and re-creating it. Drag-across should
+feel natural given that drag-to-reorder already works within each list.
+
+**Scope:**
+- The "Later…" list must adopt the same nesting and effort-pointing schema
+  as the main todo list (it currently lacks these, which is a prerequisite
+  for this feature). Nesting and effort points on a "Later…" item must
+  survive a drag back to the main list without data loss.
+- SortableJS `group` option allows items to be shared/moved between two
+  lists — this is the recommended implementation path.
+- Backend: dragging between lists likely maps to toggling a
+  `is_later` (or equivalent) flag on the todo row via `PATCH /api/todos/{id}`.
+
+**Priority:** Medium.
+
+---
+
+## FR-005 — Remove up/down buttons from "Add todo…" field; easter-egg drag-to-place
+
+**Summary:** Once FR-004 is in place (drag-across-lists works), the up/down
+position buttons in the "Add todo…" field become unnecessary and should be
+removed. Pressing Enter should simply append the new item at the bottom of the
+main todo list, from where it can be dragged to the desired position.
+
+**Easter egg:** As an alternative to Enter, the user should be able to drag the
+typed text directly from the input field to the target position in the list
+(i.e. the item is created at the drop location rather than appended to the
+bottom). This is a discoverable-but-not-required power-user gesture.
+
+**Priority:** Low (depends on FR-004).
+
+---
+
+## FR-006 — Fix resting scroll position for wide rows (e.g. "Side Projects")
+
+**Summary:** When a category row is wide enough that its project cards overflow
+the viewport, the current resting (un-scrolled) position left-aligns the
+*first card's left edge* with the *browser window's left edge*. This is ugly
+because it is misaligned with the narrower rows above/below it (whose first
+cards sit at the row-header left margin). The resting position should align
+the first card with the left margin of the row header, matching the other rows.
+
+**Reproduction:** Open the app at desktop width. Observe the "Side Projects"
+row (or any row with enough cards to overflow). Note that the leftmost visible
+card hugs the very left edge of the window rather than sitting flush with the
+card-area left boundary that narrower rows use.
+
+**Desired fix:** Set the initial `scrollLeft` (or equivalent CSS transform
+origin) of wide rows so the first card's left edge aligns with the left margin
+of the row header / the first cards of non-overflowing rows.
+
+**Priority:** Low (cosmetic).
+
+---
+
+## FR-007 — Extend progress-dot trail to full browser width
+
+**Summary:** The "fade out to right" progress-dot trail (history dots that fade
+off the right edge of a project card) looks good at narrow viewports but the
+dots stop well short of the right edge at wide desktop widths — the trail
+doesn't span the full window width.
+
+**Motivation:** From a design perspective the dots should continue all the way
+across the screen regardless of window width. The amount of history encoded
+in the dots doesn't need to grow (we don't have much history yet anyway);
+the dots just need to be distributed across the full available width rather
+than stopping at a fixed pixel count.
+
+**Suggested fix:** Size the dot-trail container to `100vw` (or the full width
+of its parent) rather than a fixed width, and distribute the dots evenly
+across that space.
+
+**Priority:** Low (cosmetic; feature was just added).

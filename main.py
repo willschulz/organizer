@@ -560,26 +560,36 @@ async def uncomplete_todo(todo_id: int):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/stats")
-async def stats(since: Optional[str] = Query(default=None)):
+async def stats(
+    since: Optional[str] = Query(default=None),
+    tz_offset_minutes: int = Query(default=0),
+):
     """
-    Return completed-todo counts. v1 just exposes the data; v2 will render it.
+    Return completed-todo effort sums grouped by local calendar day.
 
-    `since` is an ISO date or datetime; defaults to 30 days ago.
+    `since` is a local ISO date; defaults to 30 days ago.
+    `tz_offset_minutes` is JS Date.getTimezoneOffset() — minutes UTC is ahead
+    of local time (e.g. 420 for UTC-7). The backend negates it to shift UTC
+    timestamps into the caller's local date before grouping.
     """
     conn = db.get_conn()
     if since is None:
         from datetime import timedelta
         since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
 
+    # SQLite modifier to convert UTC stored timestamps → local calendar date.
+    # getTimezoneOffset() is positive when local is behind UTC, so negate it.
+    offset_modifier = f"{-tz_offset_minutes} minutes"
+
     rows = conn.execute(
-        "SELECT date(completed_at) AS day, project_id, "
+        "SELECT date(completed_at, ?) AS day, project_id, "
         "       SUM(COALESCE(effort, 1)) AS n "
         "FROM todos "
         "WHERE completed = 1 AND completed_at IS NOT NULL "
-        "  AND date(completed_at) >= date(?) "
+        "  AND date(completed_at, ?) >= date(?) "
         "GROUP BY day, project_id "
         "ORDER BY day, project_id",
-        (since,),
+        (offset_modifier, offset_modifier, since),
     ).fetchall()
 
     by_day: dict[str, dict[str, int]] = {}
@@ -588,8 +598,8 @@ async def stats(since: Optional[str] = Query(default=None)):
 
     total = conn.execute(
         "SELECT COUNT(*) AS n FROM todos "
-        "WHERE completed = 1 AND date(completed_at) >= date(?)",
-        (since,),
+        "WHERE completed = 1 AND date(completed_at, ?) >= date(?)",
+        (offset_modifier, since),
     ).fetchone()["n"]
 
     return {

@@ -938,6 +938,24 @@ function setStatus(msg) {
 // Date helpers
 // ---------------------------------------------------------------------------
 
+/** YYYY-MM-DD in the browser's local timezone. */
+function localISODate(date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+/** Build the /api/stats query string with local since date and tz offset. */
+function statsQueryString() {
+  const d = new Date();
+  d.setDate(d.getDate() - 70);
+  const since = localISODate(d);
+  const tz = new Date().getTimezoneOffset();
+  return `since=${since}&tz_offset_minutes=${tz}`;
+}
+
 function fmtDeadline(iso) {
   if (!iso) return null;
   // Parse YYYY-MM-DD as a local date (avoid TZ skew)
@@ -1299,6 +1317,7 @@ function renderTodoNode(node, group, card) {
         }
         Object.assign(t, result);
         row.replaceWith(renderTodoNode({ ...t, children: node.children }, group, card));
+        refreshHeatmap();
       } catch (err) { toast(err.message); }
     },
   });
@@ -1651,6 +1670,13 @@ fDelete.addEventListener('click', async () => {
 // Heatmap
 // ---------------------------------------------------------------------------
 
+async function refreshHeatmap() {
+  try {
+    state.stats = await api('GET', `/api/stats?${statsQueryString()}`);
+    renderHeatmap();
+  } catch {}
+}
+
 function renderHeatmap() {
   const container = document.getElementById('heatmap');
   if (!container) return;
@@ -1664,7 +1690,7 @@ function renderHeatmap() {
   for (let daysAgo = 0; daysAgo < NUM_DAYS; daysAgo++) {
     const date = new Date(today);
     date.setDate(date.getDate() - daysAgo);
-    const iso = date.toISOString().slice(0, 10);
+    const iso = localISODate(date);
     const dayData = byDay[iso];
     const count = dayData
       ? Object.values(dayData).reduce((s, v) => s + v, 0)
@@ -1688,10 +1714,9 @@ function renderHeatmap() {
 async function reload() {
   setStatus('Loading…');
   try {
-    const since70 = new Date(Date.now() - 70 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const [data, statsData] = await Promise.all([
       api('GET', '/api/projects'),
-      api('GET', `/api/stats?since=${since70}`).catch(() => ({ by_day: {} })),
+      api('GET', `/api/stats?${statsQueryString()}`).catch(() => ({ by_day: {} })),
     ]);
     state.projects = data.projects || {};
     state.stats = statsData;

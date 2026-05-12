@@ -743,6 +743,53 @@
     .row-track   { padding-left: 16px; padding-right: 16px; }
     :root        { --card-w: 260px; }
   }
+
+  /* ---- Effort badge ---- */
+  .effort-badge {
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-faint);
+    min-width: 16px;
+    text-align: center;
+    cursor: pointer;
+    padding: 1px 3px;
+    border-radius: 4px;
+    line-height: 1;
+    background: transparent;
+    border: none;
+    transition: color .15s, background .15s;
+  }
+  .effort-badge:hover { color: var(--text-muted); background: var(--bg-hover); }
+  .effort-badge.is-set { color: var(--text-muted); }
+
+  /* ---- Effort picker popover ---- */
+  .effort-picker {
+    position: fixed;
+    z-index: 300;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+  }
+  .effort-chip {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 7px;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .effort-chip:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .effort-chip.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .effort-chip.clear { color: var(--text-faint); font-weight: 400; }
 </style>
 </head>
 <body>
@@ -822,6 +869,7 @@ const CATEGORY_LABELS = {
   side_project:     'Side Projects',
 };
 const CATEGORY_ORDER = ['near_publication', 'in_development', 'early_stage', 'side_project'];
+const EFFORT_VALUES = [1, 2, 3, 5, 8, 13];
 
 const RETIRE_MS = 24 * 60 * 60 * 1000;
 function isRetired(t) {
@@ -1281,6 +1329,16 @@ function renderTodoNode(node, group, card) {
   ctxBtn.appendChild(svgIcon(ICONS.note, { size: 14 }));
   right.appendChild(ctxBtn);
 
+  // Effort badge — always visible; '?' if unset, numeral if set
+  const effortBadge = el('button', {
+    type: 'button',
+    class: 'effort-badge' + (t.effort != null ? ' is-set' : ''),
+    title: t.effort != null ? `Effort: ${t.effort} — click to change` : 'Set effort points',
+    'aria-label': 'Effort points',
+    onclick: (e) => { e.stopPropagation(); openEffortPicker(e.currentTarget, t, node, group, card); },
+  }, [t.effort != null ? String(t.effort) : '?']);
+  right.appendChild(effortBadge);
+
   // Hover-only actions: pause (when in-progress) + trash
   const actions = el('div', { class: 'todo-actions' });
 
@@ -1380,6 +1438,59 @@ function renderAddTodoInput(project) {
   const btns = el('div', { class: 'add-todo-btns' }, [btnUp, btnDown]);
   wrap.appendChild(el('div', { class: 'add-todo-row' }, [input, btns]));
   return wrap;
+}
+
+// ---------------------------------------------------------------------------
+// Effort picker
+// ---------------------------------------------------------------------------
+
+let _effortPopover = null;
+
+function closeEffortPicker() {
+  if (_effortPopover) { _effortPopover.remove(); _effortPopover = null; }
+  document.removeEventListener('click', _effortOutsideHandler, true);
+}
+
+function _effortOutsideHandler(e) {
+  if (_effortPopover && !_effortPopover.contains(e.target)) closeEffortPicker();
+}
+
+function openEffortPicker(anchor, t, node, group, card) {
+  closeEffortPicker();
+  const picker = document.createElement('div');
+  picker.className = 'effort-picker';
+
+  async function pick(value) {
+    closeEffortPicker();
+    try {
+      const result = await api('PATCH', `/api/todos/${t.id}`, { effort: value, effort_set: true });
+      Object.assign(t, result);
+      const row = card.querySelector(`[data-todo-id="${t.id}"]`);
+      if (row) row.replaceWith(renderTodoNode({ ...t, children: node.children }, group, card));
+    } catch (err) { toast(err.message); }
+  }
+
+  for (const v of EFFORT_VALUES) {
+    const chip = el('button', {
+      type: 'button',
+      class: 'effort-chip' + (t.effort === v ? ' active' : ''),
+      onclick: () => pick(v),
+    }, [String(v)]);
+    picker.appendChild(chip);
+  }
+  const clearChip = el('button', {
+    type: 'button',
+    class: 'effort-chip clear',
+    onclick: () => pick(null),
+  }, ['—']);
+  picker.appendChild(clearChip);
+
+  const rect = anchor.getBoundingClientRect();
+  picker.style.top  = `${rect.bottom + 4}px`;
+  picker.style.left = `${rect.left}px`;
+  document.body.appendChild(picker);
+  _effortPopover = picker;
+  setTimeout(() => document.addEventListener('click', _effortOutsideHandler, true), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1559,8 +1670,8 @@ function renderHeatmap() {
       ? Object.values(dayData).reduce((s, v) => s + v, 0)
       : 0;
     const intensity = count === 0 ? 'hm-0'
-                    : count === 1 ? 'hm-1'
-                    : count <= 3  ? 'hm-2'
+                    : count <= 3  ? 'hm-1'
+                    : count <= 9  ? 'hm-2'
                     :               'hm-3';
     const dot = document.createElement('div');
     dot.className = 'heatmap-dot ' + intensity + (daysAgo === 0 ? ' hm-today' : '');

@@ -131,6 +131,14 @@ class TodoCreate(BaseModel):
     display_order: Optional[int] = None
     notes: str = ""
     paths: list[str] = Field(default_factory=list)
+    effort: Optional[int] = None
+
+    @field_validator("effort")
+    @classmethod
+    def _check_effort(cls, v):
+        if v is not None and v not in (1, 2, 3, 5, 8, 13):
+            raise ValueError("effort must be one of 1, 2, 3, 5, 8, 13")
+        return v
 
 
 class TodoUpdate(BaseModel):
@@ -144,6 +152,15 @@ class TodoUpdate(BaseModel):
     completed: Optional[bool] = None
     notes: Optional[str] = None
     paths: Optional[list[str]] = None
+    effort: Optional[int] = None
+    effort_set: bool = False   # True means write effort (including null to clear)
+
+    @field_validator("effort")
+    @classmethod
+    def _check_effort(cls, v):
+        if v is not None and v not in (1, 2, 3, 5, 8, 13):
+            raise ValueError("effort must be one of 1, 2, 3, 5, 8, 13")
+        return v
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +454,9 @@ async def update_todo(todo_id: int, payload: TodoUpdate):
     if payload.paths is not None:
         fields.append("paths_json = ?")
         values.append(json.dumps(payload.paths))
+    if payload.effort_set:
+        fields.append("effort = ?")
+        values.append(payload.effort)
 
     if not fields:
         return _todo_to_dict(row)
@@ -552,7 +572,8 @@ async def stats(since: Optional[str] = Query(default=None)):
         since = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
 
     rows = conn.execute(
-        "SELECT date(completed_at) AS day, project_id, COUNT(*) AS n "
+        "SELECT date(completed_at) AS day, project_id, "
+        "       SUM(COALESCE(effort, 1)) AS n "
         "FROM todos "
         "WHERE completed = 1 AND completed_at IS NOT NULL "
         "  AND date(completed_at) >= date(?) "

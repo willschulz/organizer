@@ -111,12 +111,20 @@ def _migrate_add_todo_inprogress(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_add_todo_effort(conn: sqlite3.Connection) -> None:
+    """Idempotent: add effort column to existing todos tables."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(todos)").fetchall()}
+    if "effort" not in cols:
+        conn.execute("ALTER TABLE todos ADD COLUMN effort INTEGER")
+
+
 def init_schema() -> None:
     """Apply schema (idempotent)."""
     conn = get_conn()
     conn.executescript(SCHEMA_SQL)
     _migrate_add_todo_context(conn)
     _migrate_add_todo_inprogress(conn)
+    _migrate_add_todo_effort(conn)
 
 
 @contextmanager

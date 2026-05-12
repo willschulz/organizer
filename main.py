@@ -119,6 +119,7 @@ class TodoReorderItem(BaseModel):
     id: int
     parent_id: Optional[int] = None
     display_order: int
+    is_followup: Optional[bool] = None
 
 
 class TodoCreate(BaseModel):
@@ -520,6 +521,13 @@ async def reorder_todos(updates: list[TodoReorderItem]):
                 txn.execute(
                     "UPDATE todos SET is_followup = ? WHERE id = ?",
                     (int(inherited), u.id),
+                )
+        # For root items, apply the explicit is_followup flag when provided.
+        for u in updates:
+            if u.parent_id is None and u.is_followup is not None:
+                txn.execute(
+                    "UPDATE todos SET is_followup = ? WHERE id = ?",
+                    (int(u.is_followup), u.id),
                 )
 
     return {"updated": len(updates)}

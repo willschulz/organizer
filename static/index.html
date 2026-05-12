@@ -200,6 +200,7 @@
     gap: 14px;
     padding: 8px 28px 14px;
     scroll-snap-type: x proximity;
+    scroll-padding-left: 28px;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
     align-items: flex-start;
@@ -488,9 +489,23 @@
     display: inline-block;
   }
   .followups-toggle.open .chev { transform: rotate(90deg); }
+  /* Hide the toggle when there are no Later items; reveal it while dragging */
+  .followups-toggle.empty { display: none; }
+  .card.drag-active .followups-toggle.empty { display: flex; }
   .followups-list { display: none; }
   .followups-list.open { display: block; }
   .followups-list .todo { background: var(--bg-row); }
+  /* During drag, show the closed Later section as a compact drop zone without
+     expanding its contents — the user can drop onto it without seeing inside */
+  .card.drag-active .followups-list:not(.open) {
+    display: block;
+    min-height: 36px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+    margin: 4px 14px;
+    overflow: hidden;
+  }
+  .card.drag-active .followups-list:not(.open) > .todo { display: none; }
 
   /* ---- Add-todo input ---- */
   .add-todo {
@@ -513,28 +528,6 @@
     gap: 6px;
   }
   .add-todo-row input { flex: 1; }
-  .add-todo-btns {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    flex-shrink: 0;
-  }
-  .add-todo-btn {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    border: 1px solid var(--border);
-    background: var(--bg-elevated);
-    color: var(--text-faint);
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    transition: background .15s, color .15s, border-color .15s;
-  }
-  .add-todo-btn:hover { background: var(--bg-hover); color: var(--text); border-color: var(--text-faint); }
-  .add-todo-btn svg { width: 12px; height: 12px; }
 
   /* ---- Empty state for add-card ---- */
   .add-card-inner {
@@ -740,7 +733,7 @@
   /* Narrow screens: tighter padding */
   @media (max-width: 640px) {
     .row-header  { padding-left: 16px; padding-right: 16px; }
-    .row-track   { padding-left: 16px; padding-right: 16px; }
+    .row-track   { padding-left: 16px; padding-right: 16px; scroll-padding-left: 16px; }
     :root        { --card-w: 260px; }
   }
 
@@ -1116,21 +1109,23 @@ function buildTree(todos) {
 function collectCardOrder(card) {
   const updates = [];
 
-  function walk(container, parentId) {
+  function walk(container, parentId, isFollowup) {
     const rows = Array.from(container.children).filter(n => n.dataset && n.dataset.todoId);
     rows.forEach((row, i) => {
       const id = Number(row.dataset.todoId);
-      updates.push({ id, parent_id: parentId ?? null, display_order: i * 10 });
+      const item = { id, parent_id: parentId ?? null, display_order: i * 10 };
+      if (parentId === null) item.is_followup = isFollowup;
+      updates.push(item);
       const sub = row.querySelector(':scope > .subtodos-wrap > .subtodos');
-      if (sub) walk(sub, id);
+      if (sub) walk(sub, id, isFollowup);
     });
   }
 
   const mainList = card.querySelector('.todos');
-  if (mainList) walk(mainList, null);
+  if (mainList) walk(mainList, null, false);
 
   const followupList = card.querySelector('.followups-list');
-  if (followupList) walk(followupList, null);
+  if (followupList) walk(followupList, null, true);
 
   return updates;
 }
@@ -1229,7 +1224,7 @@ function renderCard(project) {
   const followupRoots = buildTree(followupTodos);
 
   const mainGroup    = `todos-${project.id}`;
-  const followupGroup = `followups-${project.id}`;
+  const followupGroup = mainGroup;
 
   // Main todo list
   const todoList = el('div', { class: 'todos' });
@@ -1239,11 +1234,12 @@ function renderCard(project) {
   card.appendChild(todoList);
   initSortable(todoList, mainGroup, card);
 
-  // Followups (collapsible)
-  if (followupTodos.length > 0) {
-    const isOpen = state.followupsOpen.has(String(project.id));
+  // Followups (collapsible) — always rendered so there is always a drop target
+  {
+    const isEmpty = followupTodos.length === 0;
+    const isOpen = !isEmpty && state.followupsOpen.has(String(project.id));
     const toggleBtn = el('button', {
-      class: `followups-toggle ${isOpen ? 'open' : ''}`,
+      class: `followups-toggle ${isOpen ? 'open' : ''} ${isEmpty ? 'empty' : ''}`,
       type: 'button',
       onclick: () => {
         const key = String(project.id);
@@ -1254,7 +1250,7 @@ function renderCard(project) {
       },
     }, [
       el('span', { class: 'chev' }, ['›']),
-      el('span', {}, [`Later… (${followupTodos.length})`]),
+      el('span', {}, [isEmpty ? 'Later…' : `Later… (${followupTodos.length})`]),
     ]);
     card.appendChild(toggleBtn);
     const list = el('div', { class: `followups-list ${isOpen ? 'open' : ''}` });
@@ -1415,14 +1411,14 @@ function renderTodoNode(node, group, card) {
 function renderAddTodoInput(project) {
   const wrap = el('div', { class: 'add-todo' });
 
-  async function submit(isFollowup) {
+  async function submit() {
     const text = input.value.trim();
     if (!text) return;
     try {
       await api('POST', '/api/todos', {
         project_id: project.id,
         text,
-        is_followup: isFollowup,
+        is_followup: false,
       });
       input.value = '';
       await reload();
@@ -1433,29 +1429,10 @@ function renderAddTodoInput(project) {
     type: 'text',
     placeholder: 'Add todo…',
     'aria-label': 'Add todo',
-    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(false); } },
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } },
   });
 
-  const btnUp = el('button', {
-    type: 'button',
-    class: 'add-todo-btn',
-    title: 'Add to main list',
-    'aria-label': 'Add to main list',
-    onclick: () => submit(false),
-  });
-  btnUp.appendChild(svgIcon(ICONS.arrowUp, { size: 12 }));
-
-  const btnDown = el('button', {
-    type: 'button',
-    class: 'add-todo-btn',
-    title: 'Add to Later list',
-    'aria-label': 'Add to Later list',
-    onclick: () => submit(true),
-  });
-  btnDown.appendChild(svgIcon(ICONS.arrowDown, { size: 12 }));
-
-  const btns = el('div', { class: 'add-todo-btns' }, [btnUp, btnDown]);
-  wrap.appendChild(el('div', { class: 'add-todo-row' }, [input, btns]));
+  wrap.appendChild(el('div', { class: 'add-todo-row' }, [input]));
   return wrap;
 }
 

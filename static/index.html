@@ -1355,7 +1355,7 @@ function renderTodoNode(node, group, card) {
     title: t.effort != null ? `Effort: ${t.effort} — click to change` : 'Set effort points',
     'aria-label': 'Effort points',
     onclick: (e) => { e.stopPropagation(); openEffortPicker(e.currentTarget, t, node, group, card); },
-  }, [t.effort != null ? String(t.effort) : '?']);
+  }, [t.effort != null ? String(t.effort) : '—']);
   right.appendChild(effortBadge);
 
   // Hover-only actions: pause (when in-progress) + trash
@@ -1685,7 +1685,9 @@ function renderHeatmap() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const NUM_DAYS = 70;
+  const DOT_STEP = 5 + 6; // dot width + gap
+  const containerWidth = container.clientWidth || 600;
+  const NUM_DAYS = Math.max(70, Math.ceil(containerWidth / DOT_STEP));
   const dots = [];
   for (let daysAgo = 0; daysAgo < NUM_DAYS; daysAgo++) {
     const date = new Date(today);
@@ -1731,6 +1733,12 @@ async function reload() {
 }
 
 reload();
+
+// Re-render heatmap dots when the header resizes (e.g. window width changes)
+const heatmapEl = document.getElementById('heatmap');
+if (heatmapEl && typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(() => renderHeatmap()).observe(heatmapEl);
+}
 </script>
 </body>
 </html>

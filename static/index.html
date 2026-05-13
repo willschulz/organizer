@@ -7,6 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#fbf9f4" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#161614" media="(prefers-color-scheme: dark)">
+<script>try{var __t=(JSON.parse(localStorage.getItem('organizer.settings')||'{}').theme||'auto');if(__t==='light'||__t==='dark')document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <link rel="manifest" href="/manifest.webmanifest">
 <script src="/static/vendor/Sortable.min.js"></script>
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -52,7 +53,7 @@
   }
 
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       --bg:           #161614;
       --bg-elevated:  #1f1e1b;
       --bg-hover:     #292723;
@@ -73,6 +74,28 @@
       --shadow:       0 1px 2px rgba(0,0,0,0.3), 0 4px 12px rgba(0,0,0,0.4);
       --shadow-card:  0 1px 3px rgba(0,0,0,0.4), 0 6px 20px rgba(0,0,0,0.5);
     }
+  }
+  /* Forced dark — overrides media query regardless of OS setting */
+  :root[data-theme="dark"] {
+      --bg:           #161614;
+      --bg-elevated:  #1f1e1b;
+      --bg-hover:     #292723;
+      --bg-row:       #1a1916;
+      --border:       #34322d;
+      --border-soft:  #2a2925;
+      --text:         #e9e6dd;
+      --text-muted:   #a09c92;
+      --text-faint:   #6b6862;
+      --accent:       #d99a8b;
+      --accent-soft:  #3a2622;
+      --blocker-bg:   #2e1c19;
+      --blocker-bar:  #d4604f;
+      --green:        #7cb96a;
+      --inprogress-color: #b88de0;
+      --inprogress-bg:    #2a1b38;
+      --inprogress-bar:   #b88de0;
+      --shadow:       0 1px 2px rgba(0,0,0,0.3), 0 4px 12px rgba(0,0,0,0.4);
+      --shadow-card:  0 1px 3px rgba(0,0,0,0.4), 0 6px 20px rgba(0,0,0,0.5);
   }
 
   html, body {
@@ -225,6 +248,28 @@
     margin: 0;
     line-height: 1.5;
   }
+  /* Theme segment control */
+  .theme-control {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .theme-control button {
+    flex: 1;
+    padding: 6px 4px;
+    font-size: 12px;
+    border: none;
+    border-right: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .theme-control button:last-child { border-right: none; }
+  .theme-control button:hover { background: var(--bg-hover); color: var(--text); }
+  .theme-control button.active { background: var(--bg-elevated); color: var(--text); font-weight: 600; }
   .btn-icon {
     width: 36px; height: 36px;
     border-radius: 50%;
@@ -930,6 +975,15 @@
     <p class="settings-hint">Dots saturate at this value; the ring around
       today fills as you approach it.</p>
   </div>
+  <div class="settings-group" style="margin-top:20px">
+    <label>Appearance</label>
+    <div class="theme-control">
+      <button data-theme-btn="light">Light</button>
+      <button data-theme-btn="auto">Auto</button>
+      <button data-theme-btn="dark">Dark</button>
+    </div>
+    <p class="settings-hint">Auto follows your device's dark/light setting.</p>
+  </div>
 </aside>
 <div id="settings-backdrop" class="hidden"></div>
 
@@ -1004,8 +1058,8 @@ const CATEGORY_ORDER = ['near_publication', 'in_development', 'early_stage', 'si
 const EFFORT_VALUES = [1, 2, 3, 5, 8, 13];
 
 function loadSettings() {
-  try { return { daily_goal: 10, ...JSON.parse(localStorage.getItem('organizer.settings') || '{}') }; }
-  catch { return { daily_goal: 10 }; }
+  try { return { daily_goal: 10, theme: 'auto', ...JSON.parse(localStorage.getItem('organizer.settings') || '{}') }; }
+  catch { return { daily_goal: 10, theme: 'auto' }; }
 }
 function saveSettings(s) {
   localStorage.setItem('organizer.settings', JSON.stringify(s));
@@ -2009,9 +2063,21 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
   const btn       = document.getElementById('settings-btn');
   const closeBtn  = document.getElementById('settings-close');
   const goalInput = document.getElementById('setting-daily-goal');
+  const themeBtns = document.querySelectorAll('[data-theme-btn]');
+
+  function applyTheme(theme) {
+    if (theme === 'light' || theme === 'dark') {
+      document.documentElement.setAttribute('data-theme', theme);
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    themeBtns.forEach(b => b.classList.toggle('active', b.dataset.themeBtn === theme));
+  }
 
   function openSettings() {
-    goalInput.value = loadSettings().daily_goal;
+    const s = loadSettings();
+    goalInput.value = s.daily_goal;
+    applyTheme(s.theme); // sync button highlights to current saved state
     pane.classList.remove('hidden');
     backdrop.classList.remove('hidden');
   }
@@ -2036,6 +2102,17 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
     saveSettings(s);
     renderHeatmap();
   });
+
+  themeBtns.forEach(b => b.addEventListener('click', () => {
+    const theme = b.dataset.themeBtn;
+    const s = loadSettings();
+    s.theme = theme;
+    saveSettings(s);
+    applyTheme(theme);
+  }));
+
+  // Apply saved theme on boot
+  applyTheme(loadSettings().theme);
 })();
 </script>
 </body>

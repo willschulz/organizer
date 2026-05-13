@@ -591,7 +591,7 @@ async def stats(
 
     rows = conn.execute(
         "SELECT date(completed_at, ?) AS day, project_id, "
-        "       SUM(COALESCE(effort, 1)) AS n "
+        "       SUM(COALESCE(effort, 0.5)) AS n "
         "FROM todos "
         "WHERE completed = 1 AND completed_at IS NOT NULL "
         "  AND date(completed_at, ?) >= date(?) "
@@ -600,9 +600,9 @@ async def stats(
         (offset_modifier, offset_modifier, since),
     ).fetchall()
 
-    by_day: dict[str, dict[str, int]] = {}
+    by_day: dict[str, dict[str, float]] = {}
     for r in rows:
-        by_day.setdefault(r["day"], {})[str(r["project_id"])] = int(r["n"])
+        by_day.setdefault(r["day"], {})[str(r["project_id"])] = float(r["n"])
 
     total = conn.execute(
         "SELECT COUNT(*) AS n FROM todos "

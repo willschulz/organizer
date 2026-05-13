@@ -456,7 +456,7 @@
 
   .todo {
     display: grid;
-    grid-template-columns: 24px 1fr;
+    grid-template-columns: 24px 1fr auto;
     column-gap: 8px;
     row-gap: 0;
     padding: 7px 14px;
@@ -548,6 +548,25 @@
     padding: 1px 4px;
     margin: -1px -4px;
   }
+
+  .todo-copy-btn {
+    grid-row: 1;
+    grid-column: 3;
+    align-self: center;
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity .15s, color .15s;
+    line-height: 1;
+  }
+  .todo:hover .todo-copy-btn,
+  .todo:focus-within .todo-copy-btn { opacity: 1; }
+  .todo-copy-btn:hover { color: var(--text); }
+  .todo-copy-btn:active { transform: scale(0.9); }
 
   .todo-right {
     display: flex;
@@ -1224,6 +1243,7 @@ const ICONS = {
   note:    'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5M9 13h6M9 17h6',
   play:    'M6 4l12 8-12 8V4z',
   pause:   'M6 19h4V5H6v14z;M14 5v14h4V5h-4z',
+  copy:    'M8 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2M10 20h8a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2z',
 };
 
 function render() {
@@ -1562,6 +1582,24 @@ function renderTodoNode(node, group, card) {
     onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } },
   }, [t.text]);
   row.appendChild(text);
+
+  // Copy button (col 3, row 1) — hidden until hover
+  const copyBtn = el('button', {
+    class: 'todo-copy-btn',
+    type: 'button',
+    title: 'Copy to clipboard',
+    'aria-label': 'Copy todo to clipboard',
+    onclick: (e) => {
+      e.stopPropagation();
+      const parts = [t.text];
+      if (t.notes && t.notes.trim()) parts.push('\nNotes:\n' + t.notes.trim());
+      if (Array.isArray(t.paths) && t.paths.length)
+        parts.push('\nPaths:\n' + t.paths.map(p => '- ' + p).join('\n'));
+      navigator.clipboard.writeText(parts.join('\n')).then(() => toast('Copied'));
+    },
+  });
+  copyBtn.appendChild(svgIcon(ICONS.copy, { size: 13 }));
+  row.appendChild(copyBtn);
 
   // Right-hand actions (column 4)
   // Context button is always leftmost so its position never shifts.

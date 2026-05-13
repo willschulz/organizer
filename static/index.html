@@ -288,9 +288,26 @@
   .card-cog:active { transform: rotate(60deg); }
   .card-cog svg { width: 18px; height: 18px; display: block; }
 
-  .card-deadline {
+  .card-deadline-row {
     grid-column: 1;
     grid-row: 2;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .card-velocity {
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    padding: 1px 6px;
+    border-radius: 8px;
+    line-height: 1.6;
+  }
+  .card-velocity.vel-low  { background: #f0e4d4; color: #7a4e20; }
+  .card-velocity.vel-mid  { background: #e8f0cc; color: #556b10; }
+  .card-velocity.vel-high { background: #cce8d4; color: #1e5c30; }
+  .card-deadline {
     font-size: 12px;
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
@@ -1064,6 +1081,20 @@ function projectLastActivity(p) {
   return latest;
 }
 
+function projectVelocity7d(projectId) {
+  const byDay = (state.stats && state.stats.by_day) || {};
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let sum = 0;
+  for (let d = 0; d < 7; d++) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - d);
+    const dayData = byDay[localISODate(date)];
+    if (dayData) sum += (dayData[String(projectId)] || 0);
+  }
+  return sum / 7;
+}
+
 function sortProjects(projects) {
   const withDeadline    = projects.filter(p => p.deadline);
   const withoutDeadline = projects.filter(p => !p.deadline);
@@ -1224,6 +1255,16 @@ function renderCard(project) {
     deadlineEl = el('div', { class: 'card-deadline card-deadline-blank' }, ['no deadline']);
   }
 
+  const v = projectVelocity7d(project.id);
+  const velocityEl = v > 0
+    ? el('div', {
+        class: 'card-velocity ' + (v >= 1 ? 'vel-high' : v >= 0.4 ? 'vel-mid' : 'vel-low'),
+        title: '7-day rolling average (effort points / day)',
+      }, [v.toFixed(1)])
+    : null;
+  const deadlineRow = el('div', { class: 'card-deadline-row' },
+    [deadlineEl, velocityEl].filter(Boolean));
+
   const cog = el('button', {
     class: 'card-cog',
     type: 'button',
@@ -1233,7 +1274,7 @@ function renderCard(project) {
   });
   cog.appendChild(svgIcon(ICONS.cog));
 
-  card.appendChild(el('div', { class: 'card-header' }, [title, deadlineEl, cog]));
+  card.appendChild(el('div', { class: 'card-header' }, [title, deadlineRow, cog]));
 
   // Build tree and split into main vs followup.
   // Retired todos (completed > 24h ago) are hidden; their children float to root.
@@ -1333,6 +1374,13 @@ function renderTodoNode(node, group, card) {
           result = await api('PATCH', `/api/todos/${t.id}`, { in_progress: true });
         }
         Object.assign(t, result);
+        // Sync result into state.projects so render() in refreshHeatmap() sees fresh data.
+        for (const projs of Object.values(state.projects)) {
+          for (const p of projs) {
+            const _st = (p.todos || []).find(x => x.id === t.id);
+            if (_st) { Object.assign(_st, result); break; }
+          }
+        }
         row.replaceWith(renderTodoNode({ ...t, children: node.children }, group, card));
         refreshHeatmap();
       } catch (err) { toast(err.message); }
@@ -1773,6 +1821,7 @@ async function refreshHeatmap() {
   try {
     state.stats = await api('GET', `/api/stats?${statsQueryString()}`);
     renderHeatmap();
+    render();
   } catch {}
 }
 

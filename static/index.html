@@ -448,6 +448,25 @@
     font-style: italic;
     font-size: 11px;
   }
+  .card-deadline,
+  .card-deadline-blank { cursor: pointer; }
+  .card-deadline:hover,
+  .card-deadline-blank:hover {
+    text-decoration: underline;
+    text-decoration-style: dotted;
+  }
+  .card-deadline-input {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    border: none;
+    border-bottom: 1.5px solid var(--accent);
+    background: transparent;
+    outline: none;
+    padding: 0;
+    cursor: pointer;
+    width: 130px;
+  }
 
   /* ---- Todo list ---- */
   .todos {
@@ -995,6 +1014,12 @@
       today fills as you approach it.</p>
   </div>
   <div class="settings-group" style="margin-top:20px">
+    <label for="setting-vel-goal">Velocity goal (pts/day)</label>
+    <input type="number" id="setting-vel-goal" min="0.1" max="20" step="0.1" />
+    <p class="settings-hint">Effort points/day that earns a green pill.
+      Half this value earns a yellow-green pill.</p>
+  </div>
+  <div class="settings-group" style="margin-top:20px">
     <label>Appearance</label>
     <div class="theme-control">
       <button data-theme-btn="light">Light</button>
@@ -1023,9 +1048,9 @@
       <div class="project-only">
         <label for="f-category">Category</label>
         <select id="f-category" name="category">
-          <option value="near_publication">Near-Publication</option>
-          <option value="in_development">In-Development</option>
-          <option value="early_stage">Early-Stage</option>
+          <option value="near_publication">Near Publication</option>
+          <option value="in_development">In Development</option>
+          <option value="early_stage">Early Stage</option>
           <option value="side_project">Side Project</option>
         </select>
       </div>
@@ -1068,17 +1093,17 @@
 // ---------------------------------------------------------------------------
 
 const CATEGORY_LABELS = {
-  near_publication: 'Near-Publication',
-  in_development:   'In-Development',
-  early_stage:      'Early-Stage',
+  near_publication: 'Near Publication',
+  in_development:   'In Development',
+  early_stage:      'Early Stage',
   side_project:     'Side Projects',
 };
 const CATEGORY_ORDER = ['near_publication', 'in_development', 'early_stage', 'side_project'];
 const EFFORT_VALUES = [1, 2, 3, 5, 8, 13];
 
 function loadSettings() {
-  try { return { daily_goal: 10, theme: 'auto', ...JSON.parse(localStorage.getItem('organizer.settings') || '{}') }; }
-  catch { return { daily_goal: 10, theme: 'auto' }; }
+  try { return { daily_goal: 10, vel_goal: 1, theme: 'auto', ...JSON.parse(localStorage.getItem('organizer.settings') || '{}') }; }
+  catch { return { daily_goal: 10, vel_goal: 1, theme: 'auto' }; }
 }
 function saveSettings(s) {
   localStorage.setItem('organizer.settings', JSON.stringify(s));
@@ -1438,11 +1463,31 @@ function renderCard(project) {
   } else {
     deadlineEl = el('div', { class: 'card-deadline card-deadline-blank' }, ['no deadline']);
   }
+  deadlineEl.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'date';
+    input.value = project.deadline || '';
+    input.className = 'card-deadline-input';
+    let committed = false;
+    async function commit(cancel) {
+      if (committed) return;
+      committed = true;
+      await commitDeadlineEdit(project, input.value, cancel);
+    }
+    deadlineEl.replaceWith(input);
+    input.showPicker?.();
+    input.addEventListener('change', () => commit(false));
+    input.addEventListener('blur',   () => commit(false));
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.preventDefault(); commit(true); }
+      if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
+    });
+  });
 
   const v = projectVelocity7d(project.id);
   const velocityEl = v > 0
     ? el('div', {
-        class: 'card-velocity ' + (v >= 1 ? 'vel-high' : v >= 0.4 ? 'vel-mid' : 'vel-low'),
+        class: 'card-velocity ' + (v >= loadSettings().vel_goal ? 'vel-high' : v >= loadSettings().vel_goal / 2 ? 'vel-mid' : 'vel-low'),
         title: '7-day rolling average (effort points / day)',
       }, [v.toFixed(1)])
     : null;
@@ -1865,6 +1910,17 @@ function openEffortPicker(anchor, t, node, group, card) {
 // Mutations
 // ---------------------------------------------------------------------------
 
+async function commitDeadlineEdit(project, newVal, cancelled) {
+  if (cancelled) { await reload(); return; }
+  const val = newVal || null;
+  if (val === (project.deadline || null)) { await reload(); return; }
+  try {
+    await api('PATCH', `/api/projects/${project.id}`, { deadline: val, deadline_set: true });
+    project.deadline = val;
+    await reload();
+  } catch (err) { toast(err.message); await reload(); }
+}
+
 async function commitTitleEdit(projectId, newName) {
   const proj = findProject(projectId);
   newName = (newName || '').trim();
@@ -2101,6 +2157,7 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
   const btn       = document.getElementById('settings-btn');
   const closeBtn  = document.getElementById('settings-close');
   const goalInput = document.getElementById('setting-daily-goal');
+  const velInput  = document.getElementById('setting-vel-goal');
   const themeBtns = document.querySelectorAll('[data-theme-btn]');
 
   function applyTheme(theme) {
@@ -2115,6 +2172,7 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
   function openSettings() {
     const s = loadSettings();
     goalInput.value = s.daily_goal;
+    velInput.value  = s.vel_goal;
     applyTheme(s.theme); // sync button highlights to current saved state
     pane.classList.remove('hidden');
     backdrop.classList.remove('hidden');
@@ -2141,6 +2199,15 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
     renderHeatmap();
   });
 
+  velInput.addEventListener('change', () => {
+    const v = Math.max(0.1, Math.min(20, parseFloat(velInput.value) || 1));
+    velInput.value = v;
+    const s = loadSettings();
+    s.vel_goal = v;
+    saveSettings(s);
+    render();
+  });
+
   themeBtns.forEach(b => b.addEventListener('click', () => {
     const theme = b.dataset.themeBtn;
     const s = loadSettings();
@@ -2149,8 +2216,10 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
     applyTheme(theme);
   }));
 
-  // Apply saved theme on boot
-  applyTheme(loadSettings().theme);
+  // Apply saved theme on boot; seed vel input in case pane is opened before change fires
+  const _bootSettings = loadSettings();
+  applyTheme(_bootSettings.theme);
+  velInput.value = _bootSettings.vel_goal;
 })();
 </script>
 </body>

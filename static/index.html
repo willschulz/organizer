@@ -130,19 +130,45 @@
     mask-image: linear-gradient(to right, black 55%, transparent 100%);
   }
   .heatmap-dot {
-    width: 5px;
-    height: 5px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     flex-shrink: 0;
+    position: relative;
+    background: color-mix(in srgb,
+      var(--green) calc(var(--dot-intensity, 0) * 100%),
+      var(--border));
   }
-  .hm-0 { background: var(--border); }
-  .hm-1 { background: color-mix(in srgb, var(--green) 40%, transparent); }
-  .hm-2 { background: color-mix(in srgb, var(--green) 70%, transparent); }
-  .hm-3 { background: var(--green); }
-  .hm-today { outline: 1.5px solid var(--text-faint); outline-offset: 1.5px; }
-  .hm-today.hm-1,
-  .hm-today.hm-2,
-  .hm-today.hm-3 { outline-color: var(--green); }
+  /* Deeper-green core — small central circle for goal-met days */
+  .heatmap-dot.hm-goal-met::after {
+    content: "";
+    position: absolute;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--green) 70%, black);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  /* Ring — today's dot only; conic-gradient fills clockwise from 12 o'clock */
+  .heatmap-dot.hm-today::before {
+    content: "";
+    position: absolute;
+    top: -3px;
+    left: -3px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: conic-gradient(
+      from -90deg,
+      var(--green) calc(var(--dot-intensity, 0) * 360deg),
+      var(--border) calc(var(--dot-intensity, 0) * 360deg)
+    );
+    mask: radial-gradient(circle, transparent 4px, black 4.5px);
+    -webkit-mask: radial-gradient(circle, transparent 4px, black 4.5px);
+  }
   #status {
     font-size: 12px;
     color: var(--text-faint);
@@ -901,6 +927,9 @@ const CATEGORY_LABELS = {
 };
 const CATEGORY_ORDER = ['near_publication', 'in_development', 'early_stage', 'side_project'];
 const EFFORT_VALUES = [1, 2, 3, 5, 8, 13];
+
+const DEFAULT_DAILY_GOAL = 10;
+function getDailyGoal() { return DEFAULT_DAILY_GOAL; }
 
 const RETIRE_MS = 24 * 60 * 60 * 1000;
 function isRetired(t) {
@@ -1833,9 +1862,10 @@ function renderHeatmap() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const DOT_STEP = 5 + 6; // dot width + gap
+  const DOT_STEP = 7 + 6; // dot width + gap
   const containerWidth = container.clientWidth || 600;
   const NUM_DAYS = Math.max(70, Math.ceil(containerWidth / DOT_STEP));
+  const goal = getDailyGoal();
   const dots = [];
   for (let daysAgo = 0; daysAgo < NUM_DAYS; daysAgo++) {
     const date = new Date(today);
@@ -1845,12 +1875,13 @@ function renderHeatmap() {
     const count = dayData
       ? Object.values(dayData).reduce((s, v) => s + v, 0)
       : 0;
-    const intensity = count === 0 ? 'hm-0'
-                    : count <= 3  ? 'hm-1'
-                    : count <= 9  ? 'hm-2'
-                    :               'hm-3';
+    const intensity = count === 0 ? 0 : Math.min(1, count / goal);
     const dot = document.createElement('div');
-    dot.className = 'heatmap-dot ' + intensity + (daysAgo === 0 ? ' hm-today' : '');
+    let cls = 'heatmap-dot';
+    if (count >= goal) cls += ' hm-goal-met';
+    if (daysAgo === 0) cls += ' hm-today';
+    dot.className = cls;
+    dot.style.setProperty('--dot-intensity', intensity.toFixed(3));
     dots.push(dot);
   }
 

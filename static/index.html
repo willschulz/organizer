@@ -2295,6 +2295,24 @@ function renderAddTodoInput(project, card) {
       const rect = todoEl.getBoundingClientRect();
       const rel = e.clientY - rect.top;
       const pos = rel < rect.height * 0.3 ? 'before' : rel < rect.height * 0.7 ? 'child' : 'after';
+      // When the hovered parent already has subtodo children, the 'child' zone
+      // (middle band) is ambiguous with 'after' on the last child — the cursor
+      // landing in the gap below the last child (but still inside .subtodos-wrap)
+      // hits the parent row and causes the two indicators to flicker. Remap to
+      // 'append after last child' so both cursor positions produce the same
+      // stable indicator.
+      if (pos === 'child') {
+        const subtodosEl = todoEl.querySelector(':scope > .subtodos-wrap > .subtodos');
+        const childTodos = subtodosEl
+          ? Array.from(subtodosEl.children).filter(n => n.classList.contains('todo'))
+          : [];
+        if (childTodos.length > 0) {
+          const lastChild = childTodos[childTodos.length - 1];
+          lastChild.classList.add('add-drop-after');
+          _dropTarget = { el: lastChild, position: 'after' };
+          return;
+        }
+      }
       todoEl.classList.add(pos === 'before' ? 'add-drop-before' : pos === 'child' ? 'add-drop-child' : 'add-drop-after');
       _dropTarget = { el: todoEl, position: pos };
     }

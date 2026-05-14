@@ -1424,9 +1424,9 @@ const ICONS = {
   chevron: 'M9 6l6 6-6 6',
   note:    'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5M9 13h6M9 17h6',
   play:    'M6 4l12 8-12 8V4z',
-  pause:   'M6 19h4V5H6v14z;M14 5v14h4V5h-4z',
   copy:    'M8 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2M10 20h8a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2z',
   grip:    'M9 6m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M9 12m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M9 18m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 6m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 12m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 18m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0',
+  retry:   'M1 4v6h6M23 20v-6h-6M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 0 1 3.51 15',
 };
 
 // When true, render() skips the visibility-hide flash-suppression.
@@ -2094,8 +2094,18 @@ function renderTodoNode(node, group, card) {
   row.appendChild(copyBtn);
 
   // Right-hand actions (column 4)
-  // Context button is always leftmost so its position never shifts.
+  // Effort badge is leftmost (always visible), then context button, then hover-only actions.
   const right = el('div', { class: 'todo-right' });
+
+  // Effort badge — always visible; '—' if unset, numeral if set
+  const effortBadge = el('button', {
+    type: 'button',
+    class: 'effort-badge' + (t.effort != null ? ' is-set' : ''),
+    title: t.effort != null ? `Effort: ${t.effort} — click to change` : 'Set effort points',
+    'aria-label': 'Effort points',
+    onclick: (e) => { e.stopPropagation(); openEffortPicker(e.currentTarget, t, node, group, card); },
+  }, [t.effort != null ? String(t.effort) : '—']);
+  right.appendChild(effortBadge);
 
   const ctxBtn = el('button', {
     class: 'todo-context-btn',
@@ -2107,35 +2117,27 @@ function renderTodoNode(node, group, card) {
   ctxBtn.appendChild(svgIcon(ICONS.note, { size: 14 }));
   right.appendChild(ctxBtn);
 
-  // Effort badge — always visible; '?' if unset, numeral if set
-  const effortBadge = el('button', {
-    type: 'button',
-    class: 'effort-badge' + (t.effort != null ? ' is-set' : ''),
-    title: t.effort != null ? `Effort: ${t.effort} — click to change` : 'Set effort points',
-    'aria-label': 'Effort points',
-    onclick: (e) => { e.stopPropagation(); openEffortPicker(e.currentTarget, t, node, group, card); },
-  }, [t.effort != null ? String(t.effort) : '—']);
-  right.appendChild(effortBadge);
-
-  // Hover-only actions: pause (when in-progress) + trash
+  // Hover-only actions: retry-title (when failed) + trash
   const actions = el('div', { class: 'todo-actions' });
 
-  if (t.in_progress && !t.completed) {
-    const pauseBtn = el('button', {
+  if (t.title_status === 'failed') {
+    const retryBtn = el('button', {
       class: 'todo-action-btn',
       type: 'button',
-      title: 'Pause (remove in-progress)',
-      'aria-label': 'Pause',
-      onclick: async () => {
+      title: 'Retry LLM title generation',
+      'aria-label': 'Retry title',
+      onclick: async (e) => {
+        e.stopPropagation();
         try {
-          const result = await api('PATCH', `/api/todos/${t.id}`, { in_progress: false });
+          const result = await api('POST', `/api/todos/${t.id}/retry-title`);
           Object.assign(t, result);
           row.replaceWith(renderTodoNode({ ...t, children: node.children }, group, card));
+          _schedulePendingPoll();
         } catch (err) { toast(err.message); }
       },
     });
-    pauseBtn.appendChild(svgIcon(ICONS.pause, { size: 14, filled: true }));
-    actions.appendChild(pauseBtn);
+    retryBtn.appendChild(svgIcon(ICONS.retry, { size: 14 }));
+    actions.appendChild(retryBtn);
   }
 
   const delBtn = el('button', {

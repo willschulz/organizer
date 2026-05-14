@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
@@ -30,6 +31,8 @@ import db
 
 LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL", "http://127.0.0.1:8553")
 LLM_TITLE_THRESHOLD = 60  # chars; inputs longer than this trigger LLM generation
+
+log = logging.getLogger("organizer")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -126,9 +129,14 @@ async def _generate_title(todo_id: int, raw_input: str) -> None:
             new_text = tag + data["title"]
             new_status = "generated"
         else:
+            log.warning(
+                "_generate_title todo_id=%d http_status=%d llm_status=%r",
+                todo_id, resp.status_code, data.get("status"),
+            )
             new_text = None
             new_status = "failed"
-    except Exception:
+    except Exception as exc:
+        log.warning("_generate_title todo_id=%d exception=%s", todo_id, exc)
         new_text = None
         new_status = "failed"
 
@@ -590,6 +598,43 @@ async def delete_todo(todo_id: int):
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="todo not found")
     return None
+
+
+@app.post("/api/todos/{todo_id}/retry-title")
+async def retry_todo_title(todo_id: int):
+    """
+    Re-trigger LLM title generation for a todo whose title_status is 'failed'.
+
+    The raw input is recovered from notes[0] (where create_todo stores it when
+    raw_input is provided).  Returns 409 if the todo is not in a retryable state.
+    """
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="todo not found")
+
+    todo = _todo_to_dict(row)
+    if todo["title_status"] != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"todo title_status is '{todo['title_status']}', expected 'failed'",
+        )
+
+    notes = todo.get("notes") or []
+    raw = notes[0].strip() if notes else ""
+    if not raw:
+        raise HTTPException(
+            status_code=409,
+            detail="no raw_input preserved in notes[0]; cannot retry",
+        )
+
+    conn.execute(
+        "UPDATE todos SET title_status=?, updated_at=? WHERE id=?",
+        ("pending", _now(), todo_id),
+    )
+    asyncio.create_task(_generate_title(todo_id, raw))
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    return _todo_to_dict(row)
 
 
 @app.post("/api/todos/reorder")

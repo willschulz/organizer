@@ -1020,6 +1020,11 @@
       Half this value earns a yellow-green pill.</p>
   </div>
   <div class="settings-group" style="margin-top:20px">
+    <label for="setting-retire-hours">Hide completed todos after (hours)</label>
+    <input type="number" id="setting-retire-hours" min="1" max="720" step="1" />
+    <p class="settings-hint">Completed todos disappear from the list after this many hours. Default is 24.</p>
+  </div>
+  <div class="settings-group" style="margin-top:20px">
     <label>Appearance</label>
     <div class="theme-control">
       <button data-theme-btn="light">Light</button>
@@ -1102,18 +1107,18 @@ const CATEGORY_ORDER = ['near_publication', 'in_development', 'early_stage', 'si
 const EFFORT_VALUES = [1, 2, 3, 5, 8, 13];
 
 function loadSettings() {
-  try { return { daily_goal: 10, vel_goal: 1, theme: 'auto', ...JSON.parse(localStorage.getItem('organizer.settings') || '{}') }; }
-  catch { return { daily_goal: 10, vel_goal: 1, theme: 'auto' }; }
+  try { return { daily_goal: 10, vel_goal: 1, retire_hours: 24, theme: 'auto', ...JSON.parse(localStorage.getItem('organizer.settings') || '{}') }; }
+  catch { return { daily_goal: 10, vel_goal: 1, retire_hours: 24, theme: 'auto' }; }
 }
 function saveSettings(s) {
   localStorage.setItem('organizer.settings', JSON.stringify(s));
 }
 function getDailyGoal() { return loadSettings().daily_goal; }
 
-const RETIRE_MS = 24 * 60 * 60 * 1000;
+function getRetireMs() { return loadSettings().retire_hours * 60 * 60 * 1000; }
 function isRetired(t) {
   return t.completed && t.completed_at &&
-    (Date.now() - new Date(t.completed_at).getTime() > RETIRE_MS);
+    (Date.now() - new Date(t.completed_at).getTime() > getRetireMs());
 }
 
 // ---------------------------------------------------------------------------
@@ -2156,9 +2161,10 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
   const backdrop  = document.getElementById('settings-backdrop');
   const btn       = document.getElementById('settings-btn');
   const closeBtn  = document.getElementById('settings-close');
-  const goalInput = document.getElementById('setting-daily-goal');
-  const velInput  = document.getElementById('setting-vel-goal');
-  const themeBtns = document.querySelectorAll('[data-theme-btn]');
+  const goalInput   = document.getElementById('setting-daily-goal');
+  const velInput    = document.getElementById('setting-vel-goal');
+  const retireInput = document.getElementById('setting-retire-hours');
+  const themeBtns   = document.querySelectorAll('[data-theme-btn]');
 
   function applyTheme(theme) {
     if (theme === 'light' || theme === 'dark') {
@@ -2171,8 +2177,9 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
 
   function openSettings() {
     const s = loadSettings();
-    goalInput.value = s.daily_goal;
-    velInput.value  = s.vel_goal;
+    goalInput.value   = s.daily_goal;
+    velInput.value    = s.vel_goal;
+    retireInput.value = s.retire_hours;
     applyTheme(s.theme); // sync button highlights to current saved state
     pane.classList.remove('hidden');
     backdrop.classList.remove('hidden');
@@ -2208,6 +2215,15 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
     render();
   });
 
+  retireInput.addEventListener('change', () => {
+    const v = Math.max(1, Math.min(720, parseInt(retireInput.value, 10) || 24));
+    retireInput.value = v;
+    const s = loadSettings();
+    s.retire_hours = v;
+    saveSettings(s);
+    render();
+  });
+
   themeBtns.forEach(b => b.addEventListener('click', () => {
     const theme = b.dataset.themeBtn;
     const s = loadSettings();
@@ -2219,7 +2235,8 @@ if (heatmapEl && typeof ResizeObserver !== 'undefined') {
   // Apply saved theme on boot; seed vel input in case pane is opened before change fires
   const _bootSettings = loadSettings();
   applyTheme(_bootSettings.theme);
-  velInput.value = _bootSettings.vel_goal;
+  velInput.value    = _bootSettings.vel_goal;
+  retireInput.value = _bootSettings.retire_hours;
 })();
 </script>
 </body>

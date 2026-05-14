@@ -11,6 +11,7 @@ initial CREATE block.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -174,6 +175,27 @@ def _migrate_add_top_of_mind_category(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_notes_to_json_array(conn: sqlite3.Connection) -> None:
+    """Idempotent: convert notes TEXT blobs to JSON arrays of strings.
+
+    Rows that already contain a valid JSON array are left untouched.
+    Rows with a non-empty blob become ["<blob>"].
+    Rows with an empty string become [].
+    """
+    for table in ("projects", "todos"):
+        rows = conn.execute(f"SELECT id, notes FROM {table}").fetchall()
+        for r in rows:
+            raw = r["notes"] or ""
+            try:
+                val = json.loads(raw)
+                if isinstance(val, list):
+                    continue
+            except Exception:
+                pass
+            new_val = json.dumps([raw]) if raw.strip() else "[]"
+            conn.execute(f"UPDATE {table} SET notes = ? WHERE id = ?", (new_val, r["id"]))
+
+
 def init_schema() -> None:
     """Apply schema (idempotent)."""
     conn = get_conn()
@@ -182,6 +204,7 @@ def init_schema() -> None:
     _migrate_add_todo_inprogress(conn)
     _migrate_add_todo_effort(conn)
     _migrate_add_top_of_mind_category(conn)
+    _migrate_notes_to_json_array(conn)
     _migrate_add_day_overrides(conn)
 
 

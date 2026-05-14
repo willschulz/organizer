@@ -10,6 +10,7 @@
 <script>try{var __t=(JSON.parse(localStorage.getItem('organizer.settings')||'{}').theme||'auto');if(__t==='light'||__t==='dark')document.documentElement.setAttribute('data-theme',__t);}catch(e){}</script>
 <link rel="manifest" href="/manifest.webmanifest">
 <script src="/static/vendor/Sortable.min.js"></script>
+<script src="/static/vendor/marked.min.js"></script>
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Organizer</title>
 <style>
@@ -755,6 +756,7 @@
   /* Drag-to-place indicators */
   .todo.add-drop-before { box-shadow: 0 -2px 0 var(--accent); }
   .todo.add-drop-after  { box-shadow: 0 2px 0 var(--accent); }
+  .todo.add-drop-child  { outline: 2px solid var(--accent); border-radius: 4px; }
 
   /* ---- Empty state for add-card ---- */
   .add-card-inner {
@@ -890,6 +892,79 @@
     border-color: var(--blocker-bar);
   }
 
+  /* ---- Notes list ---- */
+  .notes-section { display: flex; flex-direction: column; gap: 6px; }
+  .notes-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+  }
+  .notes-list:empty { display: none; }
+  .note-entry {
+    position: relative;
+    padding: 8px 32px 8px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .note-entry:last-child { border-bottom: none; }
+  .note-entry-body { color: var(--text); }
+  .note-entry-body p { margin: 0 0 4px; }
+  .note-entry-body p:last-child { margin-bottom: 0; }
+  .note-entry-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--bg-hover);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  .note-delete-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-faint);
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity .15s, color .15s;
+  }
+  .note-entry:hover .note-delete-btn { opacity: 1; }
+  .note-delete-btn:hover { color: var(--blocker-bar); }
+  .note-add-row {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+  }
+  .note-add-row textarea {
+    flex: 1;
+    min-height: 60px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .note-add-btn {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    align-self: flex-end;
+    transition: background .15s;
+  }
+  .note-add-btn:hover { background: var(--bg-hover); }
+
   .empty-state {
     padding: 48px 28px;
     text-align: center;
@@ -925,10 +1000,6 @@
     margin-left: 10px;
     padding-left: 8px;
     border-left: 1.5px solid var(--border-soft);
-  }
-  /* Give empty subtodos containers a drop zone during drag */
-  .card.drag-active .subtodos {
-    min-height: 18px;
   }
 
   /* SortableJS insertion-line ghost (placeholder between items) */
@@ -1113,9 +1184,13 @@
         <label for="f-paths"><span class="paths-label-project">Project filesystem paths</span><span class="paths-label-todo">Todo filesystem paths</span> <span style="font-weight: 400; text-transform: none; color: var(--text-faint);">(one per line; agent metadata, not shown on cards)</span></label>
         <textarea id="f-paths" name="paths" placeholder="projects/greenearth/like_biases/REPORT_draft3.md&#10;projects/greenearth/like_biases/jobs/"></textarea>
       </div>
-      <div>
-        <label for="f-notes">Notes <span style="font-weight: 400; text-transform: none; color: var(--text-faint);">(markdown; agent-visible, not shown on cards)</span></label>
-        <textarea id="f-notes" name="notes" placeholder="Free-form context, links, paper plans..."></textarea>
+      <div class="notes-section">
+        <label>Notes <span style="font-weight: 400; text-transform: none; color: var(--text-faint);">(markdown; agent-visible, not shown on cards)</span></label>
+        <div id="notes-list" class="notes-list"></div>
+        <div class="note-add-row">
+          <textarea id="f-note-input" placeholder="Add a note (markdown ok)..." rows="3"></textarea>
+          <button type="button" id="f-note-add" class="note-add-btn">Add</button>
+        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1505,6 +1580,10 @@ function initSortable(container, group, card) {
     chosenClass: 'sortable-chosen',
     fallbackOnBody: true,
     swapThreshold: 0.3,
+    // Lets the cursor land in an empty .subtodos container (zero-height when
+    // childless) without requiring CSS min-height to expand the row. Pairs
+    // with the .drag-target outline rendered in onMove to give visual feedback.
+    emptyInsertThreshold: 18,
     onStart() {
       card.classList.add('drag-active');
     },
@@ -1653,7 +1732,7 @@ function renderCard(project) {
 }
 
 function todoHasContext(t) {
-  return (t.notes && t.notes.trim()) || (Array.isArray(t.paths) && t.paths.length > 0);
+  return (Array.isArray(t.notes) && t.notes.length > 0) || (Array.isArray(t.paths) && t.paths.length > 0);
 }
 
 /** Return the project object that owns the given todoId, or null. */
@@ -1699,7 +1778,11 @@ function buildTodoPrompt(todo, project, ancestors) {
   lines.push(`- Deadline: ${deadline}\n`);
 
   lines.push('## Project notes');
-  lines.push((project.notes && project.notes.trim()) ? project.notes.trim() : '(no project-level notes)');
+  if (Array.isArray(project.notes) && project.notes.length) {
+    project.notes.forEach((n, i) => lines.push(`${i + 1}. ${n}`));
+  } else {
+    lines.push('(no project-level notes)');
+  }
   lines.push('');
 
   lines.push('## Project reference paths');
@@ -1715,7 +1798,11 @@ function buildTodoPrompt(todo, project, ancestors) {
     for (const anc of ancestors) {
       lines.push(`## ${anc.text}`);
       lines.push('### Notes');
-      lines.push((anc.notes && anc.notes.trim()) ? anc.notes.trim() : '(none)');
+      if (Array.isArray(anc.notes) && anc.notes.length) {
+        anc.notes.forEach((n, i) => lines.push(`${i + 1}. ${n}`));
+      } else {
+        lines.push('(none)');
+      }
       lines.push('### Reference paths');
       if (Array.isArray(anc.paths) && anc.paths.length) {
         for (const p of anc.paths) lines.push(`- ${p}`);
@@ -1728,7 +1815,11 @@ function buildTodoPrompt(todo, project, ancestors) {
 
   lines.push('# This todo');
   lines.push('## Notes');
-  lines.push((todo.notes && todo.notes.trim()) ? todo.notes.trim() : '(no per-todo notes)');
+  if (Array.isArray(todo.notes) && todo.notes.length) {
+    todo.notes.forEach((n, i) => lines.push(`${i + 1}. ${n}`));
+  } else {
+    lines.push('(no per-todo notes)');
+  }
   lines.push('## Reference paths');
   if (Array.isArray(todo.paths) && todo.paths.length) {
     for (const p of todo.paths) lines.push(`- ${p}`);
@@ -1832,7 +1923,8 @@ function renderTodoNode(node, group, card) {
       } else {
         // Fallback: bare context in case state is stale
         const parts = [t.text];
-        if (t.notes && t.notes.trim()) parts.push('\nNotes:\n' + t.notes.trim());
+        if (Array.isArray(t.notes) && t.notes.length)
+          parts.push('\nNotes:\n' + t.notes.map((n, i) => `${i + 1}. ${n}`).join('\n'));
         if (Array.isArray(t.paths) && t.paths.length)
           parts.push('\nPaths:\n' + t.paths.map(p => '- ' + p).join('\n'));
         text = parts.join('\n');
@@ -1962,8 +2054,8 @@ function renderAddTodoInput(project, card) {
   let _dropTarget = null; // { el, position: 'before'|'after' }
 
   function clearDragIndicators() {
-    card.querySelectorAll('.add-drop-before, .add-drop-after').forEach(n => {
-      n.classList.remove('add-drop-before', 'add-drop-after');
+    card.querySelectorAll('.add-drop-before, .add-drop-after, .add-drop-child').forEach(n => {
+      n.classList.remove('add-drop-before', 'add-drop-after', 'add-drop-child');
     });
     _dropTarget = null;
   }
@@ -1988,9 +2080,10 @@ function renderAddTodoInput(project, card) {
     clearDragIndicators();
     const todoEl = e.target.closest('.todo');
     if (todoEl && card.contains(todoEl)) {
-      const mid = todoEl.getBoundingClientRect().top + todoEl.getBoundingClientRect().height / 2;
-      const pos = e.clientY < mid ? 'before' : 'after';
-      todoEl.classList.add(pos === 'before' ? 'add-drop-before' : 'add-drop-after');
+      const rect = todoEl.getBoundingClientRect();
+      const rel = e.clientY - rect.top;
+      const pos = rel < rect.height * 0.3 ? 'before' : rel < rect.height * 0.7 ? 'child' : 'after';
+      todoEl.classList.add(pos === 'before' ? 'add-drop-before' : pos === 'child' ? 'add-drop-child' : 'add-drop-after');
       _dropTarget = { el: todoEl, position: pos };
     }
     // If no todo under cursor, the drop will fall through to the list container
@@ -2014,23 +2107,28 @@ function renderAddTodoInput(project, card) {
       const target = allTodos.find(t => t.id === todoId);
       if (target) {
         payload.is_followup = target.is_followup;
-        if (target.parent_id != null) payload.parent_id = target.parent_id;
-        const siblings = allTodos
-          .filter(t =>
-            t.is_followup === target.is_followup &&
-            (t.parent_id ?? null) === (target.parent_id ?? null))
-          .sort((a, b) => a.display_order - b.display_order);
-        const idx = siblings.findIndex(t => t.id === todoId);
-        if (dropTarget.position === 'before') {
-          const prev = idx > 0 ? siblings[idx - 1] : null;
-          payload.display_order = prev
-            ? Math.floor((prev.display_order + target.display_order) / 2)
-            : Math.max(0, target.display_order - 5);
+        if (dropTarget.position === 'child') {
+          payload.parent_id = target.id;
+          payload.display_order = 0;
         } else {
-          const next = idx < siblings.length - 1 ? siblings[idx + 1] : null;
-          payload.display_order = next
-            ? Math.floor((target.display_order + next.display_order) / 2)
-            : target.display_order + 5;
+          if (target.parent_id != null) payload.parent_id = target.parent_id;
+          const siblings = allTodos
+            .filter(t =>
+              t.is_followup === target.is_followup &&
+              (t.parent_id ?? null) === (target.parent_id ?? null))
+            .sort((a, b) => a.display_order - b.display_order);
+          const idx = siblings.findIndex(t => t.id === todoId);
+          if (dropTarget.position === 'before') {
+            const prev = idx > 0 ? siblings[idx - 1] : null;
+            payload.display_order = prev
+              ? Math.floor((prev.display_order + target.display_order) / 2)
+              : Math.max(0, target.display_order - 5);
+          } else {
+            const next = idx < siblings.length - 1 ? siblings[idx + 1] : null;
+            payload.display_order = next
+              ? Math.floor((target.display_order + next.display_order) / 2)
+              : target.display_order + 5;
+          }
         }
       }
     } else {
@@ -2170,8 +2268,55 @@ const fName = document.getElementById('f-name');
 const fCategory = document.getElementById('f-category');
 const fDeadline = document.getElementById('f-deadline');
 const fPaths = document.getElementById('f-paths');
-const fNotes = document.getElementById('f-notes');
+const fNoteInput = document.getElementById('f-note-input');
+const fNoteAdd = document.getElementById('f-note-add');
+const notesList = document.getElementById('notes-list');
 const fDelete = document.getElementById('f-delete');
+
+let pendingNotes = [];
+
+function renderNotesList() {
+  notesList.innerHTML = '';
+  pendingNotes.forEach((text, idx) => {
+    const entry = document.createElement('div');
+    entry.className = 'note-entry';
+
+    const body = document.createElement('div');
+    body.className = 'note-entry-body';
+    body.innerHTML = marked.parse(text);
+    entry.appendChild(body);
+
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'note-delete-btn';
+    del.setAttribute('aria-label', 'Delete note');
+    del.textContent = '×';
+    del.addEventListener('click', () => {
+      pendingNotes.splice(idx, 1);
+      renderNotesList();
+    });
+    entry.appendChild(del);
+
+    notesList.appendChild(entry);
+  });
+}
+
+function addPendingNote() {
+  const text = fNoteInput.value.trim();
+  if (!text) return;
+  pendingNotes.push(text);
+  fNoteInput.value = '';
+  renderNotesList();
+}
+
+fNoteAdd.addEventListener('click', addPendingNote);
+fNoteInput.addEventListener('keydown', (e) => {
+  // Ctrl/Cmd+Enter submits the note entry (not the whole form)
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    addPendingNote();
+  }
+});
 const fCancel = document.getElementById('f-cancel');
 const fSave   = document.getElementById('f-save');
 const fTodoText = document.getElementById('f-todo-text');
@@ -2192,7 +2337,9 @@ function openProjectModal(projectId, defaultCategory) {
     fCategory.value = defaultCategory || 'near_publication';
     fDeadline.value = '';
     fPaths.value = '';
-    fNotes.value = '';
+    pendingNotes = [];
+    fNoteInput.value = '';
+    renderNotesList();
     fDelete.style.display = 'none';
     modal.showModal();
     setTimeout(() => fName.focus(), 30);
@@ -2202,7 +2349,9 @@ function openProjectModal(projectId, defaultCategory) {
     modal.classList.add('is-edit-project');
     document.getElementById('modal-title').textContent = 'Project context';
     fPaths.value = (p.paths || []).join('\n');
-    fNotes.value = p.notes || '';
+    pendingNotes = Array.isArray(p.notes) ? [...p.notes] : [];
+    fNoteInput.value = '';
+    renderNotesList();
     fDelete.style.display = '';
     modal.showModal();
     setTimeout(() => fPaths.focus(), 30);
@@ -2216,7 +2365,9 @@ function openTodoContextModal(todo) {
   document.getElementById('modal-title').textContent = 'Todo context';
   fTodoText.textContent = todo.text || '';
   fPaths.value = (todo.paths || []).join('\n');
-  fNotes.value = todo.notes || '';
+  pendingNotes = Array.isArray(todo.notes) ? [...todo.notes] : [];
+  fNoteInput.value = '';
+  renderNotesList();
   modal.showModal();
   setTimeout(() => fPaths.focus(), 30);
 }
@@ -2224,9 +2375,13 @@ function openTodoContextModal(todo) {
 modalForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
+    // If there's unsaved text in the input box, add it automatically on Save.
+    const draftNote = fNoteInput.value.trim();
+    if (draftNote) pendingNotes.push(draftNote);
+
     if (state.modalTodoId != null) {
       const payload = {
-        notes: fNotes.value,
+        notes: pendingNotes,
         paths: fPaths.value.split('\n').map(s => s.trim()).filter(Boolean),
       };
       await api('PATCH', `/api/todos/${state.modalTodoId}`, payload);
@@ -2237,7 +2392,7 @@ modalForm.addEventListener('submit', async (e) => {
         category: fCategory.value,
         deadline: fDeadline.value || null,
         deadline_set: true,
-        notes: fNotes.value,
+        notes: pendingNotes,
         paths: fPaths.value.split('\n').map(s => s.trim()).filter(Boolean),
       };
       if (!payload.name) { toast('Name required'); return; }
@@ -2245,7 +2400,7 @@ modalForm.addEventListener('submit', async (e) => {
       toast('Created');
     } else {
       const payload = {
-        notes: fNotes.value,
+        notes: pendingNotes,
         paths: fPaths.value.split('\n').map(s => s.trim()).filter(Boolean),
       };
       await api('PATCH', `/api/projects/${state.modalProjectId}`, payload);

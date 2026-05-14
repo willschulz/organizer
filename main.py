@@ -42,6 +42,11 @@ def _project_to_dict(row) -> dict[str, Any]:
         d["paths"] = json.loads(d.pop("paths_json") or "[]")
     except Exception:
         d["paths"] = []
+    try:
+        notes = json.loads(d.get("notes") or "[]")
+        d["notes"] = notes if isinstance(notes, list) else [notes]
+    except Exception:
+        d["notes"] = []
     d["archived"] = bool(d["archived"])
     return d
 
@@ -56,6 +61,11 @@ def _todo_to_dict(row) -> dict[str, Any]:
         d["paths"] = json.loads(d.pop("paths_json") or "[]")
     except Exception:
         d["paths"] = []
+    try:
+        notes = json.loads(d.get("notes") or "[]")
+        d["notes"] = notes if isinstance(notes, list) else [notes]
+    except Exception:
+        d["notes"] = []
     return d
 
 
@@ -85,7 +95,7 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     category: str
     deadline: Optional[str] = None  # ISO date "YYYY-MM-DD"
-    notes: str = ""
+    notes: list[str] = Field(default_factory=list)
     paths: list[str] = Field(default_factory=list)
     display_order: Optional[int] = None
 
@@ -102,7 +112,7 @@ class ProjectUpdate(BaseModel):
     category: Optional[str] = None
     deadline: Optional[str] = None       # pass null to clear
     deadline_set: bool = False           # explicit: True means use deadline (incl null)
-    notes: Optional[str] = None
+    notes: Optional[list[str]] = None
     paths: Optional[list[str]] = None
     display_order: Optional[int] = None
     archived: Optional[bool] = None
@@ -130,7 +140,7 @@ class TodoCreate(BaseModel):
     is_followup: bool = False
     in_progress: bool = False
     display_order: Optional[int] = None
-    notes: str = ""
+    notes: list[str] = Field(default_factory=list)
     paths: list[str] = Field(default_factory=list)
     effort: Optional[int] = None
 
@@ -151,7 +161,7 @@ class TodoUpdate(BaseModel):
     in_progress: Optional[bool] = None
     display_order: Optional[int] = None
     completed: Optional[bool] = None
-    notes: Optional[str] = None
+    notes: Optional[list[str]] = None
     paths: Optional[list[str]] = None
     effort: Optional[int] = None
     effort_set: bool = False   # True means write effort (including null to clear)
@@ -272,7 +282,7 @@ async def create_project(payload: ProjectCreate):
             payload.category,
             order,
             payload.deadline,
-            payload.notes,
+            json.dumps(payload.notes),
             json.dumps(payload.paths),
             now,
             now,
@@ -305,7 +315,7 @@ async def update_project(project_id: int, payload: ProjectUpdate):
         values.append(payload.deadline)
     if payload.notes is not None:
         fields.append("notes = ?")
-        values.append(payload.notes)
+        values.append(json.dumps(payload.notes))
     if payload.paths is not None:
         fields.append("paths_json = ?")
         values.append(json.dumps(payload.paths))
@@ -395,7 +405,7 @@ async def create_todo(payload: TodoCreate):
             int(effective_followup),
             int(payload.in_progress),
             order,
-            payload.notes,
+            json.dumps(payload.notes),
             json.dumps(payload.paths),
             now,
             now,
@@ -451,7 +461,7 @@ async def update_todo(todo_id: int, payload: TodoUpdate):
             values.append(None)
     if payload.notes is not None:
         fields.append("notes = ?")
-        values.append(payload.notes)
+        values.append(json.dumps(payload.notes))
     if payload.paths is not None:
         fields.append("paths_json = ?")
         values.append(json.dumps(payload.paths))

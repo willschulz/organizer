@@ -1478,17 +1478,6 @@ function render() {
   });
 }
 
-function projectLastActivity(p) {
-  // Returns the most recent ISO timestamp across all todo updated_at /
-  // completed_at values, falling back to the project's own updated_at.
-  let latest = p.updated_at || '';
-  for (const t of (p.todos || [])) {
-    if (t.updated_at   && t.updated_at   > latest) latest = t.updated_at;
-    if (t.completed_at && t.completed_at > latest) latest = t.completed_at;
-  }
-  return latest;
-}
-
 function projectVelocity7d(projectId) {
   const byDay = (state.stats && state.stats.by_day) || {};
   const today = new Date();
@@ -1512,17 +1501,29 @@ function projectVelocity7d(projectId) {
 function sortProjects(projects) {
   const withDeadline    = projects.filter(p => p.deadline);
   const withoutDeadline = projects.filter(p => !p.deadline);
-  withDeadline.sort((a, b) => a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0);
-  withoutDeadline.sort((a, b) => {
-    const la = projectLastActivity(a);
-    const lb = projectLastActivity(b);
-    return lb < la ? -1 : lb > la ? 1 : 0; // descending: most-recent first
+
+  // Deadline group: ascending by due date; velocity descending within same-day ties.
+  withDeadline.sort((a, b) => {
+    if (a.deadline !== b.deadline) return a.deadline < b.deadline ? -1 : 1;
+    return projectVelocity7d(b.id) - projectVelocity7d(a.id);
   });
+
+  // No-deadline group: descending velocity; stable fallback via display_order then id.
+  withoutDeadline.sort((a, b) => {
+    const vd = projectVelocity7d(b.id) - projectVelocity7d(a.id);
+    if (vd !== 0) return vd;
+    if (a.display_order !== b.display_order) return a.display_order - b.display_order;
+    return a.id - b.id;
+  });
+
   return [...withDeadline, ...withoutDeadline];
 }
 
 function renderRow(category, projects) {
-  const visible = sortProjects(projects.filter(p => !p.archived));
+  const filtered = projects.filter(p => !p.archived);
+  // top_of_mind uses manual display_order (no velocity badge shown there either);
+  // the API already returns projects ordered by display_order, id.
+  const visible = category === 'top_of_mind' ? filtered : sortProjects(filtered);
   const track = el('div', { class: 'row-track', dataset: { category } });
   for (const p of visible) track.appendChild(renderCard(p));
   track.appendChild(renderAddCard(category));

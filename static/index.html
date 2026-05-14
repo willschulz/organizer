@@ -1053,6 +1053,7 @@
       <div class="project-only">
         <label for="f-category">Category</label>
         <select id="f-category" name="category">
+          <option value="top_of_mind">Top of Mind</option>
           <option value="near_publication">Near Publication</option>
           <option value="in_development">In Development</option>
           <option value="early_stage">Early Stage</option>
@@ -1098,12 +1099,13 @@
 // ---------------------------------------------------------------------------
 
 const CATEGORY_LABELS = {
+  top_of_mind:      'Top of Mind',
   near_publication: 'Near Publication',
   in_development:   'In Development',
   early_stage:      'Early Stage',
   side_project:     'Side Projects',
 };
-const CATEGORY_ORDER = ['near_publication', 'in_development', 'early_stage', 'side_project'];
+const CATEGORY_ORDER = ['top_of_mind', 'near_publication', 'in_development', 'early_stage', 'side_project'];
 const EFFORT_VALUES = [1, 2, 3, 5, 8, 13];
 
 function loadSettings() {
@@ -1126,7 +1128,7 @@ function isRetired(t) {
 // ---------------------------------------------------------------------------
 
 let state = {
-  projects: { near_publication: [], in_development: [], early_stage: [], side_project: [] },
+  projects: { top_of_mind: [], near_publication: [], in_development: [], early_stage: [], side_project: [] },
   followupsOpen: new Set(loadOpenFollowups()),  // set of project ids (strings)
   modalProjectId: null,
   modalTodoId: null,        // null => modal is in project mode
@@ -1326,13 +1328,14 @@ function renderRow(category, projects) {
   const track = el('div', { class: 'row-track' });
   for (const p of visible) track.appendChild(renderCard(p));
   track.appendChild(renderAddCard(category));
-  return el('section', { class: 'row', dataset: { category } }, [
+  const children = category === 'top_of_mind' ? [track] : [
     el('div', { class: 'row-header' }, [
       el('div', { class: 'row-title' }, [CATEGORY_LABELS[category]]),
       el('div', { class: 'row-count' }, [`${visible.length} project${visible.length === 1 ? '' : 's'}`]),
     ]),
     track,
-  ]);
+  ];
+  return el('section', { class: 'row', dataset: { category } }, children);
 }
 
 function renderAddCard(category) {

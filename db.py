@@ -23,6 +23,7 @@ DB_PATH = Path(os.environ.get(
 ))
 
 CATEGORIES = (
+    "top_of_mind",
     "near_publication",
     "in_development",
     "early_stage",
@@ -118,6 +119,48 @@ def _migrate_add_todo_effort(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE todos ADD COLUMN effort INTEGER")
 
 
+def _migrate_add_top_of_mind_category(conn: sqlite3.Connection) -> None:
+    """Idempotent: widen projects.category CHECK to include top_of_mind.
+
+    SQLite does not support ALTER TABLE to change CHECK constraints, so we
+    recreate the projects table with the widened constraint via the standard
+    create-copy-drop-rename pattern.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='projects'"
+    ).fetchone()
+    if row and "top_of_mind" in row[0]:
+        return  # already migrated
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute("BEGIN")
+        conn.execute("""
+            CREATE TABLE projects_new (
+              id              INTEGER PRIMARY KEY AUTOINCREMENT,
+              name            TEXT    NOT NULL,
+              category        TEXT    NOT NULL CHECK (category IN
+                                ('top_of_mind','near_publication','in_development',
+                                 'early_stage','side_project')),
+              display_order   INTEGER NOT NULL DEFAULT 0,
+              deadline        TEXT,
+              notes           TEXT    NOT NULL DEFAULT '',
+              paths_json      TEXT    NOT NULL DEFAULT '[]',
+              archived        INTEGER NOT NULL DEFAULT 0,
+              created_at      TEXT    NOT NULL,
+              updated_at      TEXT    NOT NULL
+            )
+        """)
+        conn.execute("INSERT INTO projects_new SELECT * FROM projects")
+        conn.execute("DROP TABLE projects")
+        conn.execute("ALTER TABLE projects_new RENAME TO projects")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def init_schema() -> None:
     """Apply schema (idempotent)."""
     conn = get_conn()
@@ -125,6 +168,7 @@ def init_schema() -> None:
     _migrate_add_todo_context(conn)
     _migrate_add_todo_inprogress(conn)
     _migrate_add_todo_effort(conn)
+    _migrate_add_top_of_mind_category(conn)
 
 
 @contextmanager

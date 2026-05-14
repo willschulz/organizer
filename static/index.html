@@ -175,6 +175,15 @@
     transform: translate(-50%, -50%);
     pointer-events: none;
   }
+  /* Weekend dots — smaller to discourage treating them as regular work days */
+  .heatmap-dot.hm-weekend {
+    width: 4px;
+    height: 4px;
+  }
+  /* Suppress today's ring when today is a weekend */
+  .heatmap-dot.hm-weekend.hm-today::before {
+    display: none;
+  }
   /* Ring — today's dot only; conic-gradient fills clockwise from 12 o'clock */
   .heatmap-dot.hm-today::before {
     content: "";
@@ -1332,13 +1341,16 @@ function projectVelocity7d(projectId) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   let sum = 0;
+  let weekdays = 0;
   for (let d = 0; d < 7; d++) {
     const date = new Date(today);
     date.setDate(date.getDate() - d);
+    const dow = date.getDay(); // 0=Sun, 6=Sat
+    if (dow !== 0 && dow !== 6) weekdays++;
     const dayData = byDay[localISODate(date)];
     if (dayData) sum += (dayData[String(projectId)] || 0);
   }
-  return sum / 7;
+  return weekdays > 0 ? sum / weekdays : 0;
 }
 
 function sortProjects(projects) {
@@ -2290,7 +2302,10 @@ function renderHeatmap() {
       : 0;
     const intensity = count === 0 ? 0 : Math.min(1, count / goal);
     const dot = document.createElement('div');
+    const dow = date.getDay(); // 0=Sun, 6=Sat
+    const isWeekend = (dow === 0 || dow === 6);
     let cls = 'heatmap-dot';
+    if (isWeekend) cls += ' hm-weekend';
     if (count >= goal) cls += ' hm-goal-met';
     if (daysAgo === 0) cls += ' hm-today';
     dot.className = cls;

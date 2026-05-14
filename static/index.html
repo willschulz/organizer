@@ -1567,6 +1567,100 @@ function todoHasContext(t) {
   return (t.notes && t.notes.trim()) || (Array.isArray(t.paths) && t.paths.length > 0);
 }
 
+/** Return the project object that owns the given todoId, or null. */
+function findProjectByTodo(todoId) {
+  for (const projs of Object.values(state.projects)) {
+    for (const p of projs) {
+      if ((p.todos || []).some(t => t.id === todoId)) return p;
+    }
+  }
+  return null;
+}
+
+/**
+ * Walk parent_id upward from todo within project.todos.
+ * Returns an array of ancestor todo objects, outermost first.
+ */
+function findTodoAncestors(todo, project) {
+  const byId = {};
+  for (const t of (project.todos || [])) byId[t.id] = t;
+  const ancestors = [];
+  let cur = todo;
+  while (cur.parent_id != null && byId[cur.parent_id]) {
+    cur = byId[cur.parent_id];
+    ancestors.unshift(cur);
+  }
+  return ancestors;
+}
+
+/**
+ * Build the agent-pickup prompt that gets copied to the clipboard.
+ * Template is intentionally plain markdown so it pastes cleanly into any agent chat.
+ */
+function buildTodoPrompt(todo, project, ancestors) {
+  const lines = [];
+
+  lines.push("You're picking up a todo from my Organizer (a personal project tracker).\n");
+
+  lines.push(`# Task\n${todo.text}\n`);
+
+  const deadline = project.deadline || 'none';
+  lines.push(`# Project: ${project.name}`);
+  lines.push(`- Category: ${project.category}`);
+  lines.push(`- Deadline: ${deadline}\n`);
+
+  lines.push('## Project notes');
+  lines.push((project.notes && project.notes.trim()) ? project.notes.trim() : '(no project-level notes)');
+  lines.push('');
+
+  lines.push('## Project reference paths');
+  if (Array.isArray(project.paths) && project.paths.length) {
+    for (const p of project.paths) lines.push(`- ${p}`);
+  } else {
+    lines.push('(none)');
+  }
+  lines.push('');
+
+  if (ancestors.length > 0) {
+    lines.push('# Parent context (outermost → innermost)\n');
+    for (const anc of ancestors) {
+      lines.push(`## ${anc.text}`);
+      lines.push('### Notes');
+      lines.push((anc.notes && anc.notes.trim()) ? anc.notes.trim() : '(none)');
+      lines.push('### Reference paths');
+      if (Array.isArray(anc.paths) && anc.paths.length) {
+        for (const p of anc.paths) lines.push(`- ${p}`);
+      } else {
+        lines.push('(none)');
+      }
+      lines.push('');
+    }
+  }
+
+  lines.push('# This todo');
+  lines.push('## Notes');
+  lines.push((todo.notes && todo.notes.trim()) ? todo.notes.trim() : '(no per-todo notes)');
+  lines.push('## Reference paths');
+  if (Array.isArray(todo.paths) && todo.paths.length) {
+    for (const p of todo.paths) lines.push(`- ${p}`);
+  } else {
+    lines.push('(none)');
+  }
+  lines.push('');
+
+  lines.push('# How to proceed');
+  lines.push('');
+  lines.push('1. Read the reference paths above as needed for context. Cap to ~5 files; treat directories as anchors for `Grep` / `SemanticSearch` rather than full listings.');
+  lines.push('2. Summarize, in 5–10 lines, what this task is asking for and the 2–4 most relevant pieces of context you found.');
+  lines.push('3. Ask clarifying questions and surface major design decisions or trade-offs before proposing concrete work.');
+  lines.push('4. Once questions are answered, propose either:');
+  lines.push('   - a session plan (numbered list of what you\'ll do this session), or');
+  lines.push('   - a 2–5-item breakdown of sub-todos if the work clearly spans multiple sessions.');
+  lines.push('5. Wait for explicit user confirmation before writing code, editing files, or starting work.');
+
+  return lines.join('\n');
+}
+
 /**
  * Render a single todo row plus its children recursively.
  * node: a todo object augmented with a `children` array (from buildTree).
@@ -1637,15 +1731,24 @@ function renderTodoNode(node, group, card) {
   const copyBtn = el('button', {
     class: 'todo-copy-btn',
     type: 'button',
-    title: 'Copy to clipboard',
-    'aria-label': 'Copy todo to clipboard',
+    title: 'Copy agent-pickup prompt',
+    'aria-label': 'Copy agent-pickup prompt',
     onclick: (e) => {
       e.stopPropagation();
-      const parts = [t.text];
-      if (t.notes && t.notes.trim()) parts.push('\nNotes:\n' + t.notes.trim());
-      if (Array.isArray(t.paths) && t.paths.length)
-        parts.push('\nPaths:\n' + t.paths.map(p => '- ' + p).join('\n'));
-      navigator.clipboard.writeText(parts.join('\n')).then(() => toast('Copied'));
+      const project = findProjectByTodo(t.id);
+      let text;
+      if (project) {
+        const ancestors = findTodoAncestors(t, project);
+        text = buildTodoPrompt(t, project, ancestors);
+      } else {
+        // Fallback: bare context in case state is stale
+        const parts = [t.text];
+        if (t.notes && t.notes.trim()) parts.push('\nNotes:\n' + t.notes.trim());
+        if (Array.isArray(t.paths) && t.paths.length)
+          parts.push('\nPaths:\n' + t.paths.map(p => '- ' + p).join('\n'));
+        text = parts.join('\n');
+      }
+      navigator.clipboard.writeText(text).then(() => toast('Prompt copied'));
     },
   });
   copyBtn.appendChild(svgIcon(ICONS.copy, { size: 13 }));

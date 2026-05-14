@@ -371,6 +371,7 @@
   }
 
   .card-header {
+    position: relative;
     padding: 16px 16px 10px;
     border-bottom: 1px solid var(--border-soft);
     display: grid;
@@ -378,7 +379,25 @@
     gap: 6px 8px;
     align-items: start;
   }
+  .card-grip {
+    position: absolute;
+    left: -1px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    cursor: grab;
+    padding: 2px;
+    opacity: 0;
+    transition: opacity .15s, color .15s;
+    touch-action: none;
+  }
+  .card:hover .card-grip { opacity: 1; }
+  .card-grip:active { cursor: grabbing; }
+  .card-grip svg { width: 14px; height: 14px; display: block; }
   .card-title {
+    grid-column: 1;
     font-family: var(--serif);
     font-size: 18px;
     font-weight: 600;
@@ -396,7 +415,7 @@
     padding: 1px 4px;
     margin: -1px -4px;
   }
-  .card-cog {
+  .card-ctx-btn {
     grid-column: 2;
     grid-row: 1 / span 2;
     background: transparent;
@@ -405,11 +424,10 @@
     cursor: pointer;
     padding: 2px;
     align-self: start;
-    transition: color .15s, transform .15s;
+    transition: color .15s;
   }
-  .card-cog:hover  { color: var(--text); }
-  .card-cog:active { transform: rotate(60deg); }
-  .card-cog svg { width: 18px; height: 18px; display: block; }
+  .card-ctx-btn:hover { color: var(--text); }
+  .card-ctx-btn svg { width: 16px; height: 16px; display: block; }
 
   .card-deadline-row {
     grid-column: 1;
@@ -823,7 +841,9 @@
 
   /* Mode-aware visibility (project vs todo-context modes) */
   dialog.is-project-mode .todo-only,
-  dialog.is-todo-mode    .project-only { display: none; }
+  dialog.is-todo-mode    .project-only,
+  dialog.is-todo-mode    .new-project-only,
+  dialog.is-project-mode.is-edit-project .new-project-only { display: none; }
   dialog.is-project-mode .paths-label-todo,
   dialog.is-todo-mode    .paths-label-project { display: none; }
   .modal-footer {
@@ -928,6 +948,16 @@
   .todo.drag-target.in-progress { background: color-mix(in srgb, var(--bg-hover) 70%, var(--inprogress-bg)) !important; }
 
   .sortable-chosen { cursor: grabbing; }
+
+  /* Project card drag-between-rows */
+  .card.sortable-card-ghost {
+    opacity: 0.35;
+  }
+  .card.sortable-card-chosen {
+    box-shadow: 0 8px 32px rgba(28,27,24,0.18);
+    transform: rotate(1deg);
+    cursor: grabbing;
+  }
 
   /* Narrow screens: tighter padding */
   @media (max-width: 640px) {
@@ -1046,11 +1076,11 @@
       <h2 id="modal-title">Edit project</h2>
     </div>
     <div class="modal-body">
-      <div class="project-only">
+      <div class="new-project-only">
         <label for="f-name">Name</label>
         <input id="f-name" name="name" maxlength="200" autocomplete="off" />
       </div>
-      <div class="project-only">
+      <div class="new-project-only">
         <label for="f-category">Category</label>
         <select id="f-category" name="category">
           <option value="top_of_mind">Top of Mind</option>
@@ -1060,7 +1090,7 @@
           <option value="side_project">Side Project</option>
         </select>
       </div>
-      <div class="project-only">
+      <div class="new-project-only">
         <label for="f-deadline">Deadline</label>
         <input id="f-deadline" name="deadline" type="date" />
         <div class="help">Optional. Leave blank for projects without a hard deadline.</div>
@@ -1267,7 +1297,6 @@ function svgIcon(d, opts = {}) {
   return svg;
 }
 const ICONS = {
-  cog:     'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7.4-3a7.4 7.4 0 0 0-.1-1.3l2-1.6-2-3.4-2.4.8a7.4 7.4 0 0 0-2.2-1.3l-.4-2.5h-4l-.4 2.5a7.4 7.4 0 0 0-2.2 1.3l-2.4-.8-2 3.4 2 1.6a7.4 7.4 0 0 0 0 2.6l-2 1.6 2 3.4 2.4-.8a7.4 7.4 0 0 0 2.2 1.3l.4 2.5h4l.4-2.5a7.4 7.4 0 0 0 2.2-1.3l2.4.8 2-3.4-2-1.6c.1-.4.1-.9.1-1.3Z',
   trash:   'M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14ZM10 11v6M14 11v6',
   arrowUp:   'M12 19V5M5 12l7-7 7 7',
   arrowDown: 'M12 5v14M5 12l7 7 7-7',
@@ -1276,6 +1305,7 @@ const ICONS = {
   play:    'M6 4l12 8-12 8V4z',
   pause:   'M6 19h4V5H6v14z;M14 5v14h4V5h-4z',
   copy:    'M8 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2M10 20h8a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2z',
+  grip:    'M9 6m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M9 12m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M9 18m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 6m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 12m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 18m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0',
 };
 
 function render() {
@@ -1325,9 +1355,10 @@ function sortProjects(projects) {
 
 function renderRow(category, projects) {
   const visible = sortProjects(projects.filter(p => !p.archived));
-  const track = el('div', { class: 'row-track' });
+  const track = el('div', { class: 'row-track', dataset: { category } });
   for (const p of visible) track.appendChild(renderCard(p));
   track.appendChild(renderAddCard(category));
+  initProjectSortable(track);
   const children = category === 'top_of_mind' ? [track] : [
     el('div', { class: 'row-header' }, [
       el('div', { class: 'row-title' }, [CATEGORY_LABELS[category]]),
@@ -1409,6 +1440,36 @@ async function persistDrag(card) {
     toast(err.message);
     await reload();
   }
+}
+
+/**
+ * Initialize SortableJS on a .row-track so project cards can be dragged
+ * between category rows. Only PATCHes category when the card moves to a
+ * different row (evt.from !== evt.to).
+ */
+function initProjectSortable(track) {
+  Sortable.create(track, {
+    group: 'projects',
+    animation: 150,
+    handle: '.card-grip',
+    draggable: '.card:not(.add-card)',
+    ghostClass: 'sortable-card-ghost',
+    chosenClass: 'sortable-card-chosen',
+    fallbackOnBody: true,
+    async onEnd(evt) {
+      if (evt.from === evt.to) return;
+      const projectId = Number(evt.item.dataset.projectId);
+      const newCategory = evt.to.dataset.category;
+      if (!newCategory || !projectId) return;
+      try {
+        await api('PATCH', `/api/projects/${projectId}`, { category: newCategory });
+        await reload();
+      } catch (err) {
+        toast(err.message);
+        await reload();
+      }
+    },
+  });
 }
 
 /**
@@ -1502,16 +1563,24 @@ function renderCard(project) {
   const deadlineRow = el('div', { class: 'card-deadline-row' },
     [deadlineEl, velocityEl].filter(Boolean));
 
-  const cog = el('button', {
-    class: 'card-cog',
+  const grip = el('button', {
+    class: 'card-grip',
     type: 'button',
-    title: 'Edit project',
-    'aria-label': 'Edit project',
+    title: 'Drag to move between rows',
+    'aria-label': 'Drag to reorder',
+  });
+  grip.appendChild(svgIcon(ICONS.grip, { filled: true }));
+
+  const ctxBtn = el('button', {
+    class: 'card-ctx-btn',
+    type: 'button',
+    title: 'Project context',
+    'aria-label': 'Project context',
     onclick: () => openProjectModal(project.id),
   });
-  cog.appendChild(svgIcon(ICONS.cog));
+  ctxBtn.appendChild(svgIcon(ICONS.note));
 
-  card.appendChild(el('div', { class: 'card-header' }, [title, deadlineRow, cog]));
+  card.appendChild(el('div', { class: 'card-header' }, [grip, title, deadlineRow, ctxBtn]));
 
   // Build tree and split into main vs followup.
   // Retired todos (completed > 24h ago) are hidden; their children float to root.
@@ -2100,6 +2169,7 @@ function openProjectModal(projectId, defaultCategory) {
   state.modalTodoId = null;
   setModalMode('project');
   if (projectId == null) {
+    modal.classList.remove('is-edit-project');
     document.getElementById('modal-title').textContent = 'New project';
     fName.value = '';
     fCategory.value = defaultCategory || 'near_publication';
@@ -2107,19 +2177,19 @@ function openProjectModal(projectId, defaultCategory) {
     fPaths.value = '';
     fNotes.value = '';
     fDelete.style.display = 'none';
+    modal.showModal();
+    setTimeout(() => fName.focus(), 30);
   } else {
     const p = findProject(projectId);
     if (!p) return;
-    document.getElementById('modal-title').textContent = 'Edit project';
-    fName.value = p.name;
-    fCategory.value = p.category;
-    fDeadline.value = p.deadline || '';
+    modal.classList.add('is-edit-project');
+    document.getElementById('modal-title').textContent = 'Project context';
     fPaths.value = (p.paths || []).join('\n');
     fNotes.value = p.notes || '';
     fDelete.style.display = '';
+    modal.showModal();
+    setTimeout(() => fPaths.focus(), 30);
   }
-  modal.showModal();
-  setTimeout(() => fName.focus(), 30);
 }
 
 function openTodoContextModal(todo) {
@@ -2144,7 +2214,7 @@ modalForm.addEventListener('submit', async (e) => {
       };
       await api('PATCH', `/api/todos/${state.modalTodoId}`, payload);
       toast('Saved');
-    } else {
+    } else if (state.modalProjectId == null) {
       const payload = {
         name: fName.value.trim(),
         category: fCategory.value,
@@ -2154,13 +2224,15 @@ modalForm.addEventListener('submit', async (e) => {
         paths: fPaths.value.split('\n').map(s => s.trim()).filter(Boolean),
       };
       if (!payload.name) { toast('Name required'); return; }
-      if (state.modalProjectId == null) {
-        await api('POST', '/api/projects', payload);
-        toast('Created');
-      } else {
-        await api('PATCH', `/api/projects/${state.modalProjectId}`, payload);
-        toast('Saved');
-      }
+      await api('POST', '/api/projects', payload);
+      toast('Created');
+    } else {
+      const payload = {
+        notes: fNotes.value,
+        paths: fPaths.value.split('\n').map(s => s.trim()).filter(Boolean),
+      };
+      await api('PATCH', `/api/projects/${state.modalProjectId}`, payload);
+      toast('Saved');
     }
     modal.close();
     await reload();
@@ -2168,6 +2240,7 @@ modalForm.addEventListener('submit', async (e) => {
 });
 
 fCancel.addEventListener('click', () => modal.close());
+modal.addEventListener('close', () => modal.classList.remove('is-edit-project'));
 
 fDelete.addEventListener('click', async () => {
   if (state.modalProjectId == null) return;

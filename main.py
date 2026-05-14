@@ -196,6 +196,7 @@ class ProjectUpdate(BaseModel):
 
 class TodoReorderItem(BaseModel):
     id: int
+    project_id: Optional[int] = None   # when set, may differ from current DB value to move todo
     parent_id: Optional[int] = None
     display_order: int
     is_followup: Optional[bool] = None
@@ -642,15 +643,16 @@ async def retry_todo_title(todo_id: int):
 @app.post("/api/todos/reorder")
 async def reorder_todos(updates: list[TodoReorderItem]):
     """
-    Atomically update parent_id and display_order for a set of todos.
-    All todos must belong to the same project. Frontend sends the full
-    card's worth of todos after each drag, re-indexed in 10s gaps.
+    Atomically update project_id, parent_id, and display_order for a set of todos.
+    Frontend sends the full card(s) worth of todos after each drag, re-indexed in
+    10s gaps.  project_id may differ from the current DB value to move a todo to a
+    different project card; all descendants not in the payload are cascade-updated.
     """
     if not updates:
         return {"updated": 0}
     conn = db.get_conn()
 
-    # Validate all ids exist and belong to the same project.
+    # Validate all ids exist; record their current project.
     ids = [u.id for u in updates]
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
@@ -660,16 +662,46 @@ async def reorder_todos(updates: list[TodoReorderItem]):
     if len(found) != len(ids):
         missing = set(ids) - set(found)
         raise HTTPException(status_code=404, detail=f"todo ids not found: {missing}")
-    project_ids = set(found.values())
-    if len(project_ids) > 1:
-        raise HTTPException(status_code=400, detail="all todos must belong to the same project")
+
+    # Resolve each item's intended project_id (payload wins; fall back to current DB).
+    intended_project: dict[int, int] = {
+        u.id: (u.project_id if u.project_id is not None else found[u.id])
+        for u in updates
+    }
+
+    # Validate parent-child project consistency.
+    for u in updates:
+        if u.parent_id is None:
+            continue
+        child_proj = intended_project[u.id]
+        if u.parent_id in intended_project:
+            parent_proj = intended_project[u.parent_id]
+        else:
+            pr = conn.execute(
+                "SELECT project_id FROM todos WHERE id = ?", (u.parent_id,)
+            ).fetchone()
+            if not pr:
+                raise HTTPException(
+                    status_code=404, detail=f"parent todo {u.parent_id} not found"
+                )
+            parent_proj = pr["project_id"]
+        if parent_proj != child_proj:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"todo {u.id} targets project {child_proj} but its parent "
+                    f"{u.parent_id} belongs to project {parent_proj}"
+                ),
+            )
 
     now = _now()
+    payload_ids = set(ids)
+
     with db.transaction() as txn:
         for u in updates:
             txn.execute(
-                "UPDATE todos SET parent_id = ?, display_order = ?, updated_at = ? WHERE id = ?",
-                (u.parent_id, u.display_order, now, u.id),
+                "UPDATE todos SET project_id = ?, parent_id = ?, display_order = ?, updated_at = ? WHERE id = ?",
+                (intended_project[u.id], u.parent_id, u.display_order, now, u.id),
             )
         # When a todo is reparented, sync its is_followup to the root ancestor.
         for u in updates:
@@ -686,8 +718,38 @@ async def reorder_todos(updates: list[TodoReorderItem]):
                     "UPDATE todos SET is_followup = ? WHERE id = ?",
                     (int(u.is_followup), u.id),
                 )
+        # Cascade project_id to any descendants NOT in the payload (safety net:
+        # the frontend normally includes all card todos, but guard against gaps).
+        _cascade_project_to_orphans(txn, intended_project, found, payload_ids, now)
 
     return {"updated": len(updates)}
+
+
+def _cascade_project_to_orphans(
+    txn, intended_project: dict[int, int], found: dict[int, int],
+    payload_ids: set[int], now: str,
+) -> None:
+    """BFS: for todos that changed project, cascade to any descendants missing from payload."""
+    from collections import deque
+    queue: deque[tuple[int, int]] = deque()
+    for tid, new_proj in intended_project.items():
+        if new_proj != found.get(tid, new_proj):
+            queue.append((tid, new_proj))
+    seen = set(payload_ids)
+    while queue:
+        parent_id, new_proj = queue.popleft()
+        children = txn.execute(
+            "SELECT id FROM todos WHERE parent_id = ?", (parent_id,)
+        ).fetchall()
+        for child in children:
+            cid = child["id"]
+            if cid not in seen:
+                seen.add(cid)
+                txn.execute(
+                    "UPDATE todos SET project_id = ?, updated_at = ? WHERE id = ?",
+                    (new_proj, now, cid),
+                )
+                queue.append((cid, new_proj))
 
 
 @app.post("/api/todos/{todo_id}/complete")

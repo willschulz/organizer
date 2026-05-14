@@ -1590,12 +1590,13 @@ function buildTree(todos) {
  */
 function collectCardOrder(card) {
   const updates = [];
+  const projectId = Number(card.dataset.projectId);
 
   function walk(container, parentId, isFollowup) {
     const rows = Array.from(container.children).filter(n => n.dataset && n.dataset.todoId);
     rows.forEach((row, i) => {
       const id = Number(row.dataset.todoId);
-      const item = { id, parent_id: parentId ?? null, display_order: i * 10 };
+      const item = { id, project_id: projectId, parent_id: parentId ?? null, display_order: i * 10 };
       if (parentId === null) item.is_followup = isFollowup;
       updates.push(item);
       const sub = row.querySelector(':scope > .subtodos-wrap > .subtodos');
@@ -1612,8 +1613,17 @@ function collectCardOrder(card) {
   return updates;
 }
 
-async function persistDrag(card) {
-  const updates = collectCardOrder(card);
+async function persistDragMulti(cards) {
+  const seen = new Set();
+  const updates = [];
+  for (const card of cards) {
+    for (const item of collectCardOrder(card)) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        updates.push(item);
+      }
+    }
+  }
   if (!updates.length) return;
   try {
     await api('POST', '/api/todos/reorder', updates);
@@ -1622,6 +1632,10 @@ async function persistDrag(card) {
     toast(err.message);
     await reload();
   }
+}
+
+async function persistDrag(card) {
+  return persistDragMulti([card]);
 }
 
 /**
@@ -1675,14 +1689,14 @@ function initSortable(container, group, card) {
     // with the .drag-target outline rendered in onMove to give visual feedback.
     emptyInsertThreshold: 18,
     onStart() {
-      card.classList.add('drag-active');
+      // Mark all cards so their empty Later sections become visible drop targets.
+      document.querySelectorAll('.card').forEach(c => c.classList.add('drag-active'));
     },
     onMove(evt) {
       // When the dragged item moves into a .subtodos container, highlight its
       // parent .todo to signal "will nest here". Clear on any other move.
+      document.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
       const toList = evt.to;
-      const allTodos = card.querySelectorAll('.todo');
-      allTodos.forEach(t => t.classList.remove('drag-target'));
       if (toList.classList.contains('subtodos')) {
         const wrap = toList.closest('.subtodos-wrap');
         const parentTodo = wrap ? wrap.parentElement : null;
@@ -1691,10 +1705,18 @@ function initSortable(container, group, card) {
         }
       }
     },
-    onEnd() {
-      card.classList.remove('drag-active');
-      card.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
-      persistDrag(card);
+    onEnd(evt) {
+      document.querySelectorAll('.card').forEach(c => {
+        c.classList.remove('drag-active');
+        c.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
+      });
+      const fromCard = evt.from.closest('.card');
+      const toCard   = evt.to.closest('.card');
+      if (fromCard && toCard && fromCard !== toCard) {
+        persistDragMulti([fromCard, toCard]);
+      } else {
+        persistDrag(card);
+      }
     },
   });
 }
@@ -1781,8 +1803,8 @@ function renderCard(project) {
   const mainRoots    = buildTree(mainTodos);
   const followupRoots = buildTree(followupTodos);
 
-  const mainGroup    = `todos-${project.id}`;
-  const followupGroup = mainGroup;
+  const mainGroup    = 'todos';
+  const followupGroup = 'todos';
 
   // Main todo list
   const todoList = el('div', { class: 'todos' });

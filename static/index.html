@@ -1430,10 +1430,42 @@ const ICONS = {
 
 function render() {
   const root = document.getElementById('rows');
-  root.replaceChildren();
-  for (const cat of CATEGORY_ORDER) {
-    root.appendChild(renderRow(cat, state.projects[cat] || []));
+  const winSX = window.scrollX;
+  const winSY = window.scrollY;
+  const rowScrollLeft = {};
+  for (const t of document.querySelectorAll('.row-track')) {
+    const c = t.dataset.category;
+    if (c) rowScrollLeft[c] = t.scrollLeft;
   }
+
+  const needsScrollRestore =
+    winSX !== 0 ||
+    winSY !== 0 ||
+    Object.values(rowScrollLeft).some(v => v !== 0);
+
+  if (needsScrollRestore) root.style.visibility = 'hidden';
+
+  const sections = CATEGORY_ORDER.map(cat => renderRow(cat, state.projects[cat] || []));
+  root.replaceChildren(...sections);
+
+  function applyScrollSnapshot() {
+    window.scrollTo(winSX, winSY);
+    for (const row of root.querySelectorAll('.row-track')) {
+      const c = row.dataset.category;
+      if (c != null && Object.prototype.hasOwnProperty.call(rowScrollLeft, c)) {
+        row.scrollLeft = rowScrollLeft[c];
+      }
+    }
+  }
+
+  // Restore after layout: sync scrollTo runs too early (wrong clamp) — double rAF matches paint cycles.
+  requestAnimationFrame(() => {
+    applyScrollSnapshot();
+    requestAnimationFrame(() => {
+      applyScrollSnapshot();
+      root.style.visibility = '';
+    });
+  });
 }
 
 function projectLastActivity(p) {

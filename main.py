@@ -11,18 +11,25 @@ Tailnet is the auth perimeter; there is no app-level auth.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 import db
+
+LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL", "http://127.0.0.1:8553")
+LLM_TITLE_THRESHOLD = 60  # chars; inputs longer than this trigger LLM generation
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -57,6 +64,7 @@ def _todo_to_dict(row) -> dict[str, Any]:
     d["is_followup"] = bool(d["is_followup"])
     d["in_progress"] = bool(d.get("in_progress", 0))
     d["completed"] = bool(d["completed"])
+    d["title_status"] = d.get("title_status") or ""
     try:
         d["paths"] = json.loads(d.pop("paths_json") or "[]")
     except Exception:
@@ -85,6 +93,57 @@ def _next_display_order(table: str, where_sql: str, params: tuple) -> int:
         params,
     )
     return int(cur.fetchone()["next"])
+
+
+_KNOWN_TAGS = {"fr": "FR", "bug": "BUG", "nit": "NIT"}
+_TAG_RE = re.compile(r'^(fr|bug|nit):\s*', re.IGNORECASE)
+
+
+def _extract_tag(raw: str) -> tuple[str, str]:
+    """Return (normalized_prefix, body) if raw starts with fr:/bug:/nit:, else ('', raw)."""
+    m = _TAG_RE.match(raw)
+    if m:
+        return f"{_KNOWN_TAGS[m.group(1).lower()]}: ", raw[m.end():]
+    return "", raw
+
+
+def _fallback_title(raw: str, max_words: int = 9) -> str:
+    words = raw.split()
+    return raw.strip() if len(words) <= max_words else " ".join(words[:max_words]) + "…"
+
+
+async def _generate_title(todo_id: int, raw_input: str) -> None:
+    """Background task: call LLM service, update todo text on success or mark failed."""
+    tag, body = _extract_tag(raw_input)
+    try:
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            resp = await client.post(
+                f"{LLM_SERVICE_URL}/generate-todo-title",
+                json={"raw_text": body, "prompt_version": "todo_title_v1"},
+            )
+            data = resp.json()
+        if resp.status_code == 200 and data.get("status") == "ok" and data.get("title"):
+            new_text = tag + data["title"]
+            new_status = "generated"
+        else:
+            new_text = None
+            new_status = "failed"
+    except Exception:
+        new_text = None
+        new_status = "failed"
+
+    conn = db.get_conn()
+    now = _now()
+    if new_text:
+        conn.execute(
+            "UPDATE todos SET text=?, title_status=?, updated_at=? WHERE id=?",
+            (new_text, new_status, now, todo_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE todos SET title_status=?, updated_at=? WHERE id=?",
+            (new_status, now, todo_id),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +202,7 @@ class TodoCreate(BaseModel):
     notes: list[str] = Field(default_factory=list)
     paths: list[str] = Field(default_factory=list)
     effort: Optional[int] = None
+    raw_input: Optional[str] = None  # if provided and long, triggers LLM title generation
 
     @field_validator("effort")
     @classmethod
@@ -165,12 +225,20 @@ class TodoUpdate(BaseModel):
     paths: Optional[list[str]] = None
     effort: Optional[int] = None
     effort_set: bool = False   # True means write effort (including null to clear)
+    title_status: Optional[str] = None  # internal: ''|'pending'|'generated'|'failed'
 
     @field_validator("effort")
     @classmethod
     def _check_effort(cls, v):
         if v is not None and v not in (1, 2, 3, 5, 8, 13):
             raise ValueError("effort must be one of 1, 2, 3, 5, 8, 13")
+        return v
+
+    @field_validator("title_status")
+    @classmethod
+    def _check_title_status(cls, v):
+        if v is not None and v not in ("", "pending", "generated", "failed"):
+            raise ValueError("title_status must be one of '', 'pending', 'generated', 'failed'")
         return v
 
 
@@ -181,6 +249,16 @@ class TodoUpdate(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_schema()
+    conn = db.get_conn()
+    abandoned = conn.execute(
+        "SELECT COUNT(*) FROM todos WHERE title_status = 'pending'"
+    ).fetchone()[0]
+    if abandoned:
+        conn.execute(
+            "UPDATE todos SET title_status='failed', updated_at=? WHERE title_status='pending'",
+            (_now(),),
+        )
+        print(f"[startup] marked {abandoned} abandoned pending-title todos as failed")
     yield
 
 
@@ -392,26 +470,45 @@ async def create_todo(payload: TodoCreate):
             (payload.project_id, payload.parent_id),
         )
     )
+
+    # Determine text, notes, and title_status based on raw_input length.
+    raw = payload.raw_input.strip() if payload.raw_input else None
+    use_llm = bool(raw and len(raw) > LLM_TITLE_THRESHOLD)
+    if use_llm:
+        tag, body = _extract_tag(raw)
+        todo_text = tag + _fallback_title(body)
+        todo_notes = [raw] + list(payload.notes)
+        title_status = "pending"
+    else:
+        todo_text = payload.text.strip()
+        todo_notes = list(payload.notes)
+        title_status = ""
+
     cur = conn.execute(
         "INSERT INTO todos "
         "(project_id, parent_id, text, is_blocker, is_followup, in_progress, display_order, "
-        " completed, completed_at, notes, paths_json, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)",
+        " completed, completed_at, notes, paths_json, title_status, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)",
         (
             payload.project_id,
             payload.parent_id,
-            payload.text.strip(),
+            todo_text,
             int(payload.is_blocker),
             int(effective_followup),
             int(payload.in_progress),
             order,
-            json.dumps(payload.notes),
+            json.dumps(todo_notes),
             json.dumps(payload.paths),
+            title_status,
             now,
             now,
         ),
     )
     tid = cur.lastrowid
+
+    if use_llm:
+        asyncio.create_task(_generate_title(tid, raw))
+
     row = conn.execute("SELECT * FROM todos WHERE id = ?", (tid,)).fetchone()
     return _todo_to_dict(row)
 
@@ -468,6 +565,9 @@ async def update_todo(todo_id: int, payload: TodoUpdate):
     if payload.effort_set:
         fields.append("effort = ?")
         values.append(payload.effort)
+    if payload.title_status is not None:
+        fields.append("title_status = ?")
+        values.append(payload.title_status)
 
     if not fields:
         return _todo_to_dict(row)

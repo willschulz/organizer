@@ -597,6 +597,14 @@
     margin: -1px -4px;
   }
 
+  @keyframes title-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.45; }
+  }
+  .title-pending {
+    animation: title-pulse 1.4s ease-in-out infinite;
+  }
+
   .todo-copy-btn {
     grid-row: 1;
     grid-column: 3;
@@ -1251,6 +1259,32 @@ let state = {
   dayOverrides: new Set(),  // ISO dates whose workday/holiday status is flipped from natural
 };
 
+// ---------------------------------------------------------------------------
+// LLM title pending-poll state
+// ---------------------------------------------------------------------------
+
+let _pendingPollTimer = null;
+
+function _hasPendingTitles() {
+  for (const cat of Object.values(state.projects)) {
+    for (const proj of cat) {
+      for (const todo of proj.todos ?? []) {
+        if (todo.title_status === 'pending') return true;
+      }
+    }
+  }
+  return false;
+}
+
+function _schedulePendingPoll() {
+  if (_pendingPollTimer) return; // already scheduled
+  _pendingPollTimer = setTimeout(async () => {
+    _pendingPollTimer = null;
+    await reload();
+    if (_hasPendingTitles()) _schedulePendingPoll();
+  }, 2000);
+}
+
 function loadOpenFollowups() {
   try { return JSON.parse(localStorage.getItem('organizer.openFollowups') || '[]'); }
   catch { return []; }
@@ -1899,7 +1933,7 @@ function renderTodoNode(node, group, card) {
 
   // Text (column 3)
   const text = el('div', {
-    class: 'todo-text',
+    class: ['todo-text', t.title_status === 'pending' ? 'title-pending' : ''].filter(Boolean).join(' '),
     contenteditable: 'true',
     spellcheck: 'false',
     onblur: (e) => commitTodoText(t, e.target.textContent),
@@ -2013,16 +2047,28 @@ function renderTodoNode(node, group, card) {
   return row;
 }
 
+function _fallbackTitle(raw, maxWords = 9) {
+  const trimmed = raw.trim();
+  const tagMatch = trimmed.match(/^(fr|bug|nit):\s*/i);
+  const tag = tagMatch ? tagMatch[1].toUpperCase() + ': ' : '';
+  const body = tagMatch ? trimmed.slice(tagMatch[0].length) : trimmed;
+  const words = body.split(/\s+/);
+  const truncated = words.length <= maxWords ? body : words.slice(0, maxWords).join(' ') + '…';
+  return tag + truncated;
+}
+
 function renderAddTodoInput(project, card) {
   const wrap = el('div', { class: 'add-todo' });
 
   async function submit() {
-    const text = input.value.trim();
-    if (!text) return;
+    const rawInput = input.value.trim();
+    if (!rawInput) return;
+    const isLong = rawInput.length > 60;
     try {
       await api('POST', '/api/todos', {
         project_id: project.id,
-        text,
+        text: isLong ? _fallbackTitle(rawInput) : rawInput,
+        raw_input: isLong ? rawInput : undefined,
         is_followup: false,
       });
       input.value = '';
@@ -2093,13 +2139,19 @@ function renderAddTodoInput(project, card) {
   card.addEventListener('drop', async (e) => {
     if (!card.classList.contains('add-todo-dragging')) return;
     e.preventDefault();
-    const text = input.value.trim();
+    const rawInput = input.value.trim();
     const dropTarget = _dropTarget;
     clearDragIndicators();
     card.classList.remove('add-todo-dragging');
-    if (!text) return;
+    if (!rawInput) return;
 
-    const payload = { project_id: project.id, text, is_followup: false };
+    const isLong = rawInput.length > 60;
+    const payload = {
+      project_id: project.id,
+      text: isLong ? _fallbackTitle(rawInput) : rawInput,
+      raw_input: isLong ? rawInput : undefined,
+      is_followup: false,
+    };
 
     if (dropTarget) {
       const todoId = Number(dropTarget.el.dataset.todoId);
@@ -2505,6 +2557,7 @@ async function reload() {
     setStatus('');
     render();
     renderHeatmap();
+    if (_hasPendingTitles()) _schedulePendingPoll();
   } catch (err) {
     setStatus('offline');
     toast(err.message);
@@ -2512,6 +2565,15 @@ async function reload() {
 }
 
 reload();
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && _pendingPollTimer) {
+    clearTimeout(_pendingPollTimer);
+    _pendingPollTimer = null;
+  } else if (!document.hidden && _hasPendingTitles()) {
+    _schedulePendingPoll();
+  }
+});
 
 // Re-render heatmap dots when the header resizes (e.g. window width changes)
 const heatmapEl = document.getElementById('heatmap');

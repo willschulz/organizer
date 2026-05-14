@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| Status | planning |
+| Status | complete |
 | Tracks | — |
 | Depends on | `jobs/2026-05-14-llm-title-service.md` — Ollama + `llm-service` endpoint must be up on `organizer-ct` before this job starts |
 | Part of | [`jobs/2026-05-14-llm-todo-title-harness.md`](../../jobs/2026-05-14-llm-todo-title-harness.md) |
@@ -463,10 +463,111 @@ scp organizer/static/index.html root@100.90.75.10:/opt/organizer/static/index.ht
 
 ## Execution log
 
-<!-- Fill in when work begins. -->
+### 2026-05-14 13:28 — Steps 1–7: backend changes
+
+**Step 1 — db.py:** Added `title_status TEXT NOT NULL DEFAULT ''` to `SCHEMA_SQL` `CREATE TABLE todos`. Added `_migrate_add_title_status(conn)` migration function (PRAGMA table_info guard pattern, identical to existing migrations). Called at end of `init_schema()`.
+
+**Step 2 — `_todo_to_dict`:** Added `d["title_status"] = d.get("title_status") or ""` to expose field in all API responses.
+
+**Step 3 — schemas:**
+- `TodoCreate` gained `raw_input: Optional[str] = None`.
+- `TodoUpdate` gained `title_status: Optional[str] = None` with `_check_title_status` validator permitting `''|'pending'|'generated'|'failed'`.
+
+**Step 4 — helpers + background task:** Added `import asyncio`, `import httpx`, `import os` at module top. Added module-level `LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL", "http://127.0.0.1:8553")` and `LLM_TITLE_THRESHOLD = 60`. Implemented `_fallback_title(raw, max_words=9)` and `async def _generate_title(todo_id, raw_input)` per spec.
+
+**Step 5 — `create_todo` handler:** When `raw_input` is present and `len > 60`, sets `todo_text = _fallback_title(raw)`, prepends raw to notes, sets `title_status = 'pending'` in INSERT, spawns `asyncio.create_task(_generate_title(tid, raw))`. Short-input path is unchanged.
+
+**Step 6 — startup sweep:** Added abandoned-pending sweep in `lifespan` after `db.init_schema()`.
+
+**Step 7 — requirements.txt:** Added `httpx>=0.27`.
+
+### 2026-05-14 13:35 — Steps 8–11: frontend changes
+
+**Step 8 — CSS:** Added `@keyframes title-pulse` (opacity 1→0.45→1, 1.4s ease-in-out) and `.title-pending { animation: title-pulse ... }` after `.todo-text:focus` block.
+
+**Step 9 — `renderTodoNode`:** `todo-text` div class now conditionally includes `title-pending` when `t.title_status === 'pending'`.
+
+**Step 10 — polling:** Added `_pendingPollTimer`, `_hasPendingTitles()`, `_schedulePendingPoll()` after `state` block. Added `if (_hasPendingTitles()) _schedulePendingPoll()` call at end of `reload()`. Added `visibilitychange` listener after boot `reload()` call. Corrected job plan's `state.data?.projects` → `state.projects` (actual frontend variable name).
+
+**Step 11 — submit + drag-drop:** Added `_fallbackTitle(raw, maxWords=9)` JS helper before `renderAddTodoInput`. Updated `submit()` to send `raw_input` when `rawInput.length > 60`. Updated `drop` handler identically.
+
+### 2026-05-14 13:40 — Step 12: deploy
+
+```
+# .env written
+ssh root@100.90.75.10 'echo "LLM_SERVICE_URL=http://100.68.34.113:8553" > /opt/organizer/.env'
+# → LLM_SERVICE_URL=http://100.68.34.113:8553
+
+# files copied
+scp organizer/requirements.txt organizer/db.py organizer/main.py root@100.90.75.10:/opt/organizer/
+# → scp ok
+
+# httpx installed
+ssh root@100.90.75.10 '/opt/organizer/venv/bin/pip install -r /opt/organizer/requirements.txt --quiet'
+# → pip ok
+
+# service restarted
+ssh root@100.90.75.10 'systemctl restart organizer && sleep 2 && systemctl is-active organizer'
+# → active
+
+# frontend deployed
+scp organizer/static/index.html root@100.90.75.10:/opt/organizer/static/index.html
+# → frontend scp ok
+```
+
+Startup log: clean — no errors, no abandoned pending todos on first start.
+
+Migration verified:
+```
+sqlite3 /opt/organizer/data/organizer.db "PRAGMA table_info(todos);" | grep title_status
+# → 15|title_status|TEXT|1|''|0
+```
+
+API response verified: `title_status: ""` present on existing todos.
+
+### 2026-05-14 13:44 — Step 13: end-to-end smoke test
+
+**Happy path (LLM available):**
+
+```
+POST /api/todos { project_id: 1, raw_input: "I need to fix the pipeline stage 1 OOM issue by profiling memory usage during the parquet sink phase and reducing batch sizes accordingly" }
+→ id: 151, text: "I need to fix the pipeline stage 1 OOM…", title_status: "pending"
+→ notes[0]: "I need to fix the pipeline stage 1 OOM issue..." (raw input preserved)
+```
+
+After ~40s:
+```
+sqlite3: 151|Profile Parquet Sink Memory Usage|generated|[...]
+```
+
+LLM generated "Profile Parquet Sink Memory Usage". `title_status = "generated"`. Raw input in `notes[0]`. ✓
+
+**Fallback path (LLM service stopped):**
+
+```
+pct exec 302 -- systemctl stop llm-service
+POST /api/todos { project_id: 1, raw_input: "I need to refactor the data ingestion pipeline to handle large files more efficiently by implementing streaming reads and chunked processing" }
+→ id: 152, text: "I need to refactor the data ingestion pipeline to…", title_status: "pending"
+```
+
+After 40s (httpx 35s timeout + buffer):
+```
+sqlite3: 152|I need to refactor the data ingestion pipeline to…|failed
+```
+
+Fallback title preserved. `title_status = "failed"`. Raw input in `notes[0]`. ✓
+
+llm-service restarted. Test todos deleted.
 
 ---
 
 ## Post-completion state
 
-<!-- Fill in when complete. -->
+All 13 steps executed and verified. The feature is live at `https://organizer.manx-celsius.ts.net/`.
+
+- `organizer/db.py`: `title_status TEXT NOT NULL DEFAULT ''` column added via `_migrate_add_title_status`; existing rows all have `''`.
+- `organizer/main.py`: `httpx>=0.27` dependency; `LLM_SERVICE_URL` env var; `_fallback_title`; `_generate_title` background task; `TodoCreate.raw_input`; `TodoUpdate.title_status`; lifespan startup sweep; `create_todo` async dispatch.
+- `organizer/requirements.txt`: `httpx>=0.27` added.
+- `organizer/static/index.html`: `title-pulse` CSS keyframe; `renderTodoNode` conditional class; `_fallbackTitle` JS helper; `submit()` + `drop` handler send `raw_input`; polling loop (`_schedulePendingPoll`, `_hasPendingTitles`) with `visibilitychange` pause.
+- `organizer-ct` env: `/opt/organizer/.env` contains `LLM_SERVICE_URL=http://100.68.34.113:8553`.
+- End-to-end verified: happy path generates "Profile Parquet Sink Memory Usage" in ~40s; failure path falls back cleanly to truncated title with `title_status='failed'`.

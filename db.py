@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS todos (
   completed_at    TEXT,
   notes           TEXT    NOT NULL DEFAULT '',
   paths_json      TEXT    NOT NULL DEFAULT '[]',
+  title_status    TEXT    NOT NULL DEFAULT '',
   created_at      TEXT    NOT NULL,
   updated_at      TEXT    NOT NULL
 );
@@ -131,6 +132,15 @@ def _migrate_add_day_overrides(conn: sqlite3.Connection) -> None:
             date TEXT PRIMARY KEY
         )
     """)
+
+
+def _migrate_add_title_status(conn: sqlite3.Connection) -> None:
+    """Idempotent: add title_status column to todos for LLM-generated titles."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(todos)").fetchall()}
+    if "title_status" not in cols:
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN title_status TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _migrate_add_top_of_mind_category(conn: sqlite3.Connection) -> None:
@@ -206,6 +216,7 @@ def init_schema() -> None:
     _migrate_add_top_of_mind_category(conn)
     _migrate_notes_to_json_array(conn)
     _migrate_add_day_overrides(conn)
+    _migrate_add_title_status(conn)
 
 
 @contextmanager

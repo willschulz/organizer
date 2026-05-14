@@ -796,6 +796,19 @@
     background: rgba(0,0,0,0.45);
     backdrop-filter: blur(2px);
   }
+  /* Center modal: UA uses inset:0 + margin:auto, but the global `* { margin:0 }` leaves
+     margin at 0 so the box stays at the origin. Explicit placement works across engines. */
+  dialog#project-modal[open],
+  dialog#project-modal:modal {
+    position: fixed;
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    right: auto;
+    bottom: auto;
+    transform: translate(-50%, -50%);
+    margin: 0;
+  }
   .modal-form {
     display: flex;
     flex-direction: column;

@@ -1006,7 +1006,7 @@
   /* ---- Nested sub-todos ---- */
   .subtodos {
     margin-left: 10px;
-    padding-left: 8px;
+    padding-left: 0;
     border-left: 1.5px solid var(--border-soft);
   }
 
@@ -1280,7 +1280,8 @@ function _schedulePendingPoll() {
   if (_pendingPollTimer) return; // already scheduled
   _pendingPollTimer = setTimeout(async () => {
     _pendingPollTimer = null;
-    await reload();
+    _renderNoFlashSuppression = true;
+    try { await reload(); } finally { _renderNoFlashSuppression = false; }
     if (_hasPendingTitles()) _schedulePendingPoll();
   }, 2000);
 }
@@ -1428,6 +1429,11 @@ const ICONS = {
   grip:    'M9 6m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M9 12m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M9 18m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 6m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 12m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0;M15 18m-1.5 0a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0-3 0',
 };
 
+// When true, render() skips the visibility-hide flash-suppression.
+// Set by callers (e.g. background polls) whose DOM changes are text-only
+// and won't cause a scroll jump.
+let _renderNoFlashSuppression = false;
+
 function render() {
   const root = document.getElementById('rows');
   const winSX = window.scrollX;
@@ -1443,7 +1449,11 @@ function render() {
     winSY !== 0 ||
     Object.values(rowScrollLeft).some(v => v !== 0);
 
-  if (needsScrollRestore) root.style.visibility = 'hidden';
+  // Only hide the rows if this render was triggered by a structural change
+  // (add / delete / reorder). Background title-only polls set _renderNoFlashSuppression
+  // so we skip the hide and avoid repeated flicker.
+  const hideForRestore = needsScrollRestore && !_renderNoFlashSuppression;
+  if (hideForRestore) root.style.visibility = 'hidden';
 
   const sections = CATEGORY_ORDER.map(cat => renderRow(cat, state.projects[cat] || []));
   root.replaceChildren(...sections);
@@ -1463,7 +1473,7 @@ function render() {
     applyScrollSnapshot();
     requestAnimationFrame(() => {
       applyScrollSnapshot();
-      root.style.visibility = '';
+      if (hideForRestore) root.style.visibility = '';
     });
   });
 }

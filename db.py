@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS todos (
 CREATE INDEX IF NOT EXISTS idx_todos_project      ON todos(project_id);
 CREATE INDEX IF NOT EXISTS idx_todos_parent       ON todos(parent_id);
 CREATE INDEX IF NOT EXISTS idx_todos_completed_at ON todos(completed_at);
+
+CREATE TABLE IF NOT EXISTS day_overrides (
+  date TEXT PRIMARY KEY   -- ISO date YYYY-MM-DD; presence = "flipped" from natural state
+);
 """
 
 
@@ -119,6 +123,15 @@ def _migrate_add_todo_effort(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE todos ADD COLUMN effort INTEGER")
 
 
+def _migrate_add_day_overrides(conn: sqlite3.Connection) -> None:
+    """Idempotent: create day_overrides table if it doesn't exist yet."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS day_overrides (
+            date TEXT PRIMARY KEY
+        )
+    """)
+
+
 def _migrate_add_top_of_mind_category(conn: sqlite3.Connection) -> None:
     """Idempotent: widen projects.category CHECK to include top_of_mind.
 
@@ -169,6 +182,7 @@ def init_schema() -> None:
     _migrate_add_todo_inprogress(conn)
     _migrate_add_todo_effort(conn)
     _migrate_add_top_of_mind_category(conn)
+    _migrate_add_day_overrides(conn)
 
 
 @contextmanager

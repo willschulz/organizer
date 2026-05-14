@@ -158,6 +158,7 @@
     border-radius: 50%;
     flex-shrink: 0;
     position: relative;
+    cursor: pointer;
     background: color-mix(in srgb,
       var(--green) calc(var(--dot-intensity, 0) * 100%),
       var(--border));
@@ -175,10 +176,10 @@
     transform: translate(-50%, -50%);
     pointer-events: none;
   }
-  /* Weekend dots — smaller to discourage treating them as regular work days */
+  /* Weekend dots — smaller to discourage treating them as regular work days.
+     transform: scale keeps the 7px layout footprint so toggling doesn't shift dots. */
   .heatmap-dot.hm-weekend {
-    width: 4px;
-    height: 4px;
+    transform: scale(calc(4 / 7));
   }
   /* Suppress today's ring when today is a weekend */
   .heatmap-dot.hm-weekend.hm-today::before {
@@ -1172,6 +1173,7 @@ let state = {
   modalProjectId: null,
   modalTodoId: null,        // null => modal is in project mode
   stats: { by_day: {} },
+  dayOverrides: new Set(),  // ISO dates whose workday/holiday status is flipped from natural
 };
 
 function loadOpenFollowups() {
@@ -1345,9 +1347,12 @@ function projectVelocity7d(projectId) {
   for (let d = 0; d < 7; d++) {
     const date = new Date(today);
     date.setDate(date.getDate() - d);
+    const iso = localISODate(date);
     const dow = date.getDay(); // 0=Sun, 6=Sat
-    if (dow !== 0 && dow !== 6) weekdays++;
-    const dayData = byDay[localISODate(date)];
+    const isNaturalWeekend = (dow === 0 || dow === 6);
+    const isOverridden = state.dayOverrides.has(iso);
+    if (!(isNaturalWeekend !== isOverridden)) weekdays++; // effective workday
+    const dayData = byDay[iso];
     if (dayData) sum += (dayData[String(projectId)] || 0);
   }
   return weekdays > 0 ? sum / weekdays : 0;
@@ -2303,13 +2308,23 @@ function renderHeatmap() {
     const intensity = count === 0 ? 0 : Math.min(1, count / goal);
     const dot = document.createElement('div');
     const dow = date.getDay(); // 0=Sun, 6=Sat
-    const isWeekend = (dow === 0 || dow === 6);
+    const isNaturalWeekend = (dow === 0 || dow === 6);
+    const isOverridden = state.dayOverrides.has(iso);
+    const isEffectiveWeekend = isNaturalWeekend !== isOverridden; // XOR
     let cls = 'heatmap-dot';
-    if (isWeekend) cls += ' hm-weekend';
+    if (isEffectiveWeekend) cls += ' hm-weekend';
     if (count >= goal) cls += ' hm-goal-met';
     if (daysAgo === 0) cls += ' hm-today';
     dot.className = cls;
     dot.style.setProperty('--dot-intensity', intensity.toFixed(3));
+    dot.title = isEffectiveWeekend
+      ? 'Holiday / non-workday \u2014 click to mark as workday'
+      : 'Workday \u2014 click to mark as holiday';
+    dot.addEventListener('click', async () => {
+      const result = await api('POST', '/api/day-overrides/toggle', { date: iso });
+      state.dayOverrides = new Set(result.dates);
+      renderHeatmap();
+    });
     dots.push(dot);
   }
 
@@ -2323,12 +2338,14 @@ function renderHeatmap() {
 async function reload() {
   setStatus('Loading…');
   try {
-    const [data, statsData] = await Promise.all([
+    const [data, statsData, overridesData] = await Promise.all([
       api('GET', '/api/projects'),
       api('GET', `/api/stats?${statsQueryString()}`).catch(() => ({ by_day: {} })),
+      api('GET', '/api/day-overrides').catch(() => ({ dates: [] })),
     ]);
     state.projects = data.projects || {};
     state.stats = statsData;
+    state.dayOverrides = new Set(overridesData.dates);
     for (const cat of CATEGORY_ORDER) state.projects[cat] = state.projects[cat] || [];
     setStatus('');
     render();

@@ -615,3 +615,31 @@ async def stats(
         "total_completed": int(total),
         "by_day": by_day,
     }
+
+
+# ---------------------------------------------------------------------------
+# Day overrides (click-to-toggle holiday / workday on heatmap dots)
+# ---------------------------------------------------------------------------
+
+class DayOverrideIn(BaseModel):
+    date: str  # YYYY-MM-DD
+
+
+@app.get("/api/day-overrides")
+async def get_day_overrides():
+    rows = db.get_conn().execute("SELECT date FROM day_overrides").fetchall()
+    return {"dates": [r["date"] for r in rows]}
+
+
+@app.post("/api/day-overrides/toggle")
+async def toggle_day_override(body: DayOverrideIn):
+    conn = db.get_conn()
+    existing = conn.execute(
+        "SELECT 1 FROM day_overrides WHERE date = ?", (body.date,)
+    ).fetchone()
+    if existing:
+        conn.execute("DELETE FROM day_overrides WHERE date = ?", (body.date,))
+    else:
+        conn.execute("INSERT INTO day_overrides (date) VALUES (?)", (body.date,))
+    rows = conn.execute("SELECT date FROM day_overrides").fetchall()
+    return {"dates": [r["date"] for r in rows]}

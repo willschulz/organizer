@@ -31,6 +31,8 @@ import db
 
 LLM_SERVICE_URL = os.environ.get("LLM_SERVICE_URL", "http://127.0.0.1:8553")
 LLM_TITLE_THRESHOLD = 60  # chars; inputs longer than this trigger LLM generation
+# Completed todos with effort unset (UI "–") count at this weight in /api/stats.
+DEFAULT_UNPOINTED_EFFORT = 0.25
 
 log = logging.getLogger("organizer")
 
@@ -746,13 +748,13 @@ async def stats(
 
     rows = conn.execute(
         "SELECT date(completed_at, ?) AS day, project_id, "
-        "       SUM(COALESCE(effort, 0.5)) AS n "
+        "       SUM(COALESCE(effort, ?)) AS n "
         "FROM todos "
         "WHERE completed = 1 AND completed_at IS NOT NULL "
         "  AND date(completed_at, ?) >= date(?) "
         "GROUP BY day, project_id "
         "ORDER BY day, project_id",
-        (offset_modifier, offset_modifier, since),
+        (offset_modifier, DEFAULT_UNPOINTED_EFFORT, offset_modifier, since),
     ).fetchall()
 
     by_day: dict[str, dict[str, float]] = {}

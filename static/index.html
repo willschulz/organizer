@@ -1757,14 +1757,18 @@ function renderCard(project) {
   });
   grip.appendChild(svgIcon(ICONS.grip, { filled: true }));
 
-  const ctxBtn = el('button', {
-    class: 'card-ctx-btn',
-    type: 'button',
-    title: 'Project context',
-    'aria-label': 'Project context',
-    onclick: () => openProjectModal(project.id),
-  });
-  ctxBtn.appendChild(svgIcon(ICONS.note));
+  let ctxBtn = null;
+  if (project.category !== 'top_of_mind') {
+    const btn = el('button', {
+      class: 'card-ctx-btn',
+      type: 'button',
+      title: 'Project context',
+      'aria-label': 'Project context',
+      onclick: () => openProjectModal(project.id),
+    });
+    btn.appendChild(svgIcon(ICONS.note));
+    ctxBtn = btn;
+  }
 
   card.appendChild(el('div', { class: 'card-header' }, [grip, title, deadlineRow, ctxBtn].filter(Boolean)));
 

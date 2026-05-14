@@ -1690,8 +1690,8 @@ function renderCard(project) {
         title: '7-day rolling average (effort points / day)',
       }, [v.toFixed(1)])
     : null;
-  const deadlineRow = el('div', { class: 'card-deadline-row' },
-    [deadlineEl, velocityEl].filter(Boolean));
+  const deadlineRow = project.category === 'top_of_mind' ? null
+    : el('div', { class: 'card-deadline-row' }, [deadlineEl, velocityEl].filter(Boolean));
 
   const grip = el('button', {
     class: 'card-grip',
@@ -1710,7 +1710,7 @@ function renderCard(project) {
   });
   ctxBtn.appendChild(svgIcon(ICONS.note));
 
-  card.appendChild(el('div', { class: 'card-header' }, [grip, title, deadlineRow, ctxBtn]));
+  card.appendChild(el('div', { class: 'card-header' }, [grip, title, deadlineRow, ctxBtn].filter(Boolean)));
 
   // Build tree and split into main vs followup.
   // Retired todos (completed > 24h ago) are hidden; their children float to root.
@@ -1862,15 +1862,97 @@ function buildTodoPrompt(todo, project, ancestors) {
   }
   lines.push('');
 
+  const tid = todo.id;
+  const pid = project.id;
+  const parentId = todo.parent_id ?? 'null';
+  const apiBase = 'https://organizer.manx-celsius.ts.net';
+
   lines.push('# How to proceed');
   lines.push('');
-  lines.push('1. Read the reference paths above as needed for context. Cap to ~5 files; treat directories as anchors for `Grep` / `SemanticSearch` rather than full listings.');
-  lines.push('2. Summarize, in 5–10 lines, what this task is asking for and the 2–4 most relevant pieces of context you found.');
-  lines.push('3. Ask clarifying questions and surface major design decisions or trade-offs before proposing concrete work.');
-  lines.push('4. Once questions are answered, propose either:');
+  lines.push('## Identifiers');
+  lines.push(`- todo_id:    ${tid}`);
+  lines.push(`- project_id: ${pid}`);
+  lines.push(`- parent_id:  ${parentId}`);
+  lines.push(`- API base:   ${apiBase}`);
+  lines.push('- LAN fallback (cert/Serve outage): http://10.0.10.165:8551');
+  lines.push('');
+  lines.push('## Phase 1: Pickup');
+  lines.push('1. Read the reference paths above as needed. Cap to ~5 files;');
+  lines.push('   treat directories as anchors for `Grep` / `SemanticSearch` rather than full listings.');
+  lines.push('2. Summarize in 5–10 lines: what the task asks + the 2–4 most relevant pieces of context.');
+  lines.push('3. Ask clarifying questions and surface design trade-offs before proposing concrete work.');
+  lines.push('4. Propose either:');
   lines.push('   - a session plan (numbered list of what you\'ll do this session), or');
   lines.push('   - a 2–5-item breakdown of sub-todos if the work clearly spans multiple sessions.');
   lines.push('5. Wait for explicit user confirmation before writing code, editing files, or starting work.');
+  lines.push('');
+  lines.push('## Phase 2: Mark in-progress (before first substantive action)');
+  lines.push('Once the user has confirmed the plan and you are about to write code, kick off a job,');
+  lines.push('or edit artifacts, PATCH the todo in-progress. Do this in the same turn as the first');
+  lines.push('substantive action — so the Organizer UI reflects what is actively being worked on:');
+  lines.push('');
+  lines.push('    curl -s -X PATCH -H \'Content-Type: application/json\' \\');
+  lines.push(`      -d \'{"in_progress": true}\' \\`);
+  lines.push(`      ${apiBase}/api/todos/${tid}`);
+  lines.push('');
+  lines.push('Skip this if the session is breakdown-only (decomposing into sub-todos without');
+  lines.push('executing any of them yet).');
+  lines.push('');
+  lines.push('## Phase 3: Do the work');
+  lines.push('');
+  lines.push('## Phase 4: Close-out (propose 4 buckets, any can be empty)');
+  lines.push('When the deliverable is done (or the session is ending), propose the following');
+  lines.push('in one consolidated message. Wait for explicit approval before writing anything.');
+  lines.push('');
+  lines.push(`(a) NEW FOLLOW-UP TODOS surfaced by this session. For each, state placement:`);
+  lines.push(`    child of a still-open parent (parent_id=X) vs. top-level (parent_id=null).`);
+  lines.push(`    Default sibling parent_id for this todo: ${parentId}.`);
+  lines.push('(b) MARK THIS TODO COMPLETED? Default for "super-tasks" (open puzzles /');
+  lines.push('    investigations / multi-phase work): NO — finishing one phase does not');
+  lines.push('    close the puzzle. Default for "work-tasks" (one bounded deliverable): YES');
+  lines.push('    if the deliverable exists and the user agrees.');
+  lines.push('(c) PROJECT-CONTEXT UPDATES (notes / paths) if the session moved the project\'s');
+  lines.push('    durable state forward (new draft, new artifact directory, new convention).');
+  lines.push('    Prefer APPENDING a note entry to rewriting existing ones.');
+  lines.push('(d) SIBLING RE-PRIORITIZATION if session findings change the marginal value of');
+  lines.push('    previously-planned siblings. Name which item, where it should move, and why.');
+  lines.push('    Do NOT silently reorder — requires explicit approval.');
+  lines.push('');
+  lines.push('## Phase 5: Write back (strict order, only after approval)');
+  lines.push('');
+  lines.push('1. POST new follow-up todos first (one per approved item):');
+  lines.push('');
+  lines.push('    curl -s -X POST -H \'Content-Type: application/json\' \\');
+  lines.push(`      -d \'{"project_id": ${pid}, "parent_id": <P or null>,\' \\`);
+  lines.push('           \'"text": "...", "notes": ["..."], "paths": ["..."]}\' \\');
+  lines.push(`      ${apiBase}/api/todos`);
+  lines.push('');
+  lines.push('2. POST reorder if pinning a new sub-todo to top, or applying bucket-(d) changes.');
+  lines.push('   Send the FULL updated child list, display_order ascending in 10s gaps,');
+  lines.push('   parent_id on every entry:');
+  lines.push('');
+  lines.push('    curl -s -X POST -H \'Content-Type: application/json\' \\');
+  lines.push('      -d \'[{"id": <NEW>, "parent_id": <P>, "display_order": 0},\' \\');
+  lines.push('           \'{"id": <SIB1>, "parent_id": <P>, "display_order": 10}]\' \\');
+  lines.push(`      ${apiBase}/api/todos/reorder`);
+  lines.push('');
+  lines.push('3. PATCH project context (only if bucket c approved):');
+  lines.push('');
+  lines.push('    curl -s -X PATCH -H \'Content-Type: application/json\' \\');
+  lines.push('      -d \'{"notes": [...], "paths": [...]}\' \\');
+  lines.push(`      ${apiBase}/api/projects/${pid}`);
+  lines.push('');
+  lines.push('4. Mark THIS todo complete LAST (only if bucket b approved).');
+  lines.push('   Completion auto-clears in_progress:');
+  lines.push('');
+  lines.push(`    curl -s -X POST ${apiBase}/api/todos/${tid}/complete`);
+  lines.push('');
+  lines.push('5. If NOT completing, clear in_progress. Stale in-progress flags mislead');
+  lines.push('   the next pickup:');
+  lines.push('');
+  lines.push('    curl -s -X PATCH -H \'Content-Type: application/json\' \\');
+  lines.push(`      -d \'{"in_progress": false}\' \\`);
+  lines.push(`      ${apiBase}/api/todos/${tid}`);
 
   return lines.join('\n');
 }

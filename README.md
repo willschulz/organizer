@@ -24,8 +24,11 @@ side-project todos in a clean, ADHD-friendly UI.
   todo row. Completing a todo auto-clears `in_progress`.
 - **Per-todo context fields** (`notes`, `paths_json`) — hidden from the
   card UI by default; a hover note-icon button opens them in an edit
-  modal. Feed the agent pickup/breakdown/close-out loop (see Agent rules
-  below).
+  modal. Each todo card also has a **Copy** button that writes a
+  structured context block (ids, notes, paths, and phase instructions)
+  to the clipboard, ready to paste into a Cursor agent session or for
+  injection by an orchestrating agent. Feed the agent
+  pickup/breakdown/close-out loop (see Agent rules below).
 - Per-project hidden metadata: `paths_json` and free-form `notes`.
   Both feed the agent rules; neither is rendered in the card UI.
 - PWA hooks: `manifest.webmanifest`, apple-touch icons, and standalone
@@ -103,13 +106,22 @@ todo.
 
 | Rule file | Trigger | Behavior |
 |---|---|---|
-| `organizer-todo-pickup.mdc` | "let's work on X / tackle Y" | Resolve project + todo via `GET /api/projects`; read `notes`/`paths` context (capped); summarize; propose a session plan or hand off to breakdown |
+| `organizer-todo-pickup.mdc` | "let's work on X / tackle Y" — or a Copy-button paste | Resolve project + todo (or skip resolution if Copy context already present); read `notes`/`paths` context (capped); summarize; propose a session plan or hand off to breakdown |
 | `organizer-todo-breakdown.mdc` | Todo spans multiple sessions | Propose 2–5 same-abstraction-level sub-todos with starter `paths`/`notes`; `POST` only after explicit user approval |
 | `organizer-todo-closeout.mdc` | Work completes or advances a todo | Summarize changes; propose new todos, completion, and project-context updates; write in order new → update → complete, only after approval |
 
 The loop is intentionally human-gated: no rule writes to the API
 without explicit user confirmation. Sub-todos are kept at a
 human-manageable abstraction level (one focused session each).
+
+**Two entry points, same rules:**
+- **Copy-button / orchestrated:** structured context (ids, notes, paths,
+  phase instructions) arrives pre-loaded — either pasted from the card's
+  Copy button or injected by an orchestrating agent. The pickup rule
+  recognises the block and skips API resolution.
+- **Natural-language pickup:** user says "let's work on X". The pickup
+  rule resolves the todo via `GET /api/projects`, reads context, then
+  proceeds as normal.
 
 ## Local development
 
@@ -199,15 +211,7 @@ from the laptop and push.
 
 ## Roadmap (deferred)
 
-**Current active work:**
-- Smoke-test sessions 2+: execute and close out Like Biases sub-todos
-  (ids 44/45/46) using the pickup → breakdown → close-out loop.
-- Final review of agent rules + archive the smoke-test job.
-
 **Queued:**
-- Add `organizer-ct` to the PBS nightly LXC backup schedule.
 - Flesh out `notes`/`paths` context for all 13 projects.
-- v2 progress visualization (the `completed_at` data is already captured).
-- Nested-todo UI (schema already supports it via `parent_id`).
 - Resources row (cloud-credits tracker).
 - iOS / macOS Xcode wrapper if the PWA experience hits limits.

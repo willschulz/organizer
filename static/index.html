@@ -763,7 +763,7 @@
   /* Drag-to-place indicators */
   .todo.add-drop-before { box-shadow: 0 -2px 0 var(--accent); }
   .todo.add-drop-after  { box-shadow: 0 2px 0 var(--accent); }
-  .todo.add-drop-child  { outline: 2px solid var(--accent); border-radius: 4px; }
+  .todo.add-drop-child  { background: var(--bg-hover); }
 
   /* ---- Empty state for add-card ---- */
   .add-card-inner {
@@ -1048,10 +1048,7 @@
   /* Nest-target highlight: the item the dragged todo will nest under */
   .todo.drag-target {
     background: var(--bg-hover) !important;
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
-    border-radius: var(--radius-sm);
-    transition: background .1s, outline-color .1s;
+    transition: background .1s;
   }
   .todo.drag-target.in-progress { background: color-mix(in srgb, var(--bg-hover) 70%, var(--inprogress-bg)) !important; }
 

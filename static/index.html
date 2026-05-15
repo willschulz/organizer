@@ -1038,6 +1038,13 @@
     opacity: 1 !important;
   }
   .sortable-ghost > * { display: none !important; }
+  /* Anchor clone: visual placeholder at the dragged item's original position
+     so layout doesn't jump when the real element collapses to the 2px ghost
+     line. pointer-events: none ensures Sortable's hit-testing passes through. */
+  .sortable-anchor-clone {
+    opacity: 0.35;
+    pointer-events: none;
+  }
 
   /* Nest-target highlight: the item the dragged todo will nest under */
   .todo.drag-target {
@@ -1678,6 +1685,8 @@ function initSortable(container, group, card) {
     group,
     animation: 100,
     handle: '.todo-check',
+    // Exclude anchor clones from being picked up as draggable items.
+    draggable: '.todo:not(.sortable-anchor-clone)',
     delay: 0,
     touchStartThreshold: 5,
     ghostClass: 'sortable-ghost',
@@ -1691,9 +1700,20 @@ function initSortable(container, group, card) {
     // end of a non-empty subtodos list (leaf's empty .subtodos was reaching
     // into the parent's tail zone and the main list's "after super-item" zone).
     emptyInsertThreshold: 6,
-    onStart() {
+    onStart(evt) {
       // Mark all cards so their empty Later sections become visible drop targets.
       document.querySelectorAll('.card').forEach(c => c.classList.add('drag-active'));
+      // Insert a faded clone at the original position to fill the layout slot
+      // that collapses when the real element becomes the 2px ghost line. Without
+      // this, items below jump upward by the dragged row's height at drag start.
+      const original = evt.item;
+      const clone = original.cloneNode(true);
+      clone.classList.add('sortable-anchor-clone');
+      clone.classList.remove('drag-target', 'sortable-chosen', 'sortable-ghost');
+      // Strip data-todo-id so collectCardOrder ignores the clone entirely.
+      clone.removeAttribute('data-todo-id');
+      clone.querySelectorAll('[data-todo-id]').forEach(n => n.removeAttribute('data-todo-id'));
+      original.parentNode.insertBefore(clone, original.nextSibling);
     },
     onMove(evt) {
       const toList = evt.to;
@@ -1738,6 +1758,9 @@ function initSortable(container, group, card) {
         c.classList.remove('drag-active');
         c.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
       });
+      // Remove all anchor clones — use document scope so cross-card drags
+      // clean up the clone in the source card too.
+      document.querySelectorAll('.sortable-anchor-clone').forEach(c => c.remove());
       const fromCard = evt.from.closest('.card');
       const toCard   = evt.to.closest('.card');
       if (fromCard && toCard && fromCard !== toCard) {

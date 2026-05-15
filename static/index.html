@@ -1684,20 +1684,48 @@ function initSortable(container, group, card) {
     chosenClass: 'sortable-chosen',
     fallbackOnBody: true,
     swapThreshold: 0.3,
-    // Lets the cursor land in an empty .subtodos container (zero-height when
-    // childless) without requiring CSS min-height to expand the row. Pairs
-    // with the .drag-target outline rendered in onMove to give visual feedback.
-    emptyInsertThreshold: 18,
+    // Lets the cursor land in an empty .subtodos container. Paired with a
+    // min-height applied to empty .subtodos during drag (see CSS), so the
+    // catch zone is visible and doesn't have to reach out far. Reducing this
+    // from 18 → 6 eliminates the 3-way Sortable container oscillation at the
+    // end of a non-empty subtodos list (leaf's empty .subtodos was reaching
+    // into the parent's tail zone and the main list's "after super-item" zone).
+    emptyInsertThreshold: 6,
     onStart() {
       // Mark all cards so their empty Later sections become visible drop targets.
       document.querySelectorAll('.card').forEach(c => c.classList.add('drag-active'));
     },
     onMove(evt) {
+      const toList = evt.to;
+      const isSubtodos = toList.classList.contains('subtodos');
+      // Reject moves into a sub-item's own empty .subtodos — i.e., "add as
+      // subitem of an existing sub-item". This was the catch zone causing the
+      // 3-way flicker at the end of a non-empty subtodos list, because
+      // emptyInsertThreshold extends the leaf's hit zone across the adjacent
+      // state-1 (sibling-after-super) and state-3 (append-at-end-of-super's-
+      // subtodos) zones. Trade-off: drag-reorder cannot deepen nesting into
+      // an existing sub-item; for that, use the add-button drag (which has
+      // its own well-defined "add-drop-child" highlight). Top-level empty
+      // .subtodos (a top-level parent with no children yet) is still
+      // accepting, so drag-nesting into a top-level todo still works.
+      if (isSubtodos) {
+        const nonGhostNonDragged = Array.from(toList.children).filter(n =>
+          !n.classList.contains('sortable-ghost') && n !== evt.dragged
+        );
+        if (nonGhostNonDragged.length === 0) {
+          const wrap = toList.closest('.subtodos-wrap');
+          const owner = wrap ? wrap.parentElement : null;
+          const ownerContainer = owner ? owner.parentElement : null;
+          if (ownerContainer && ownerContainer.classList.contains('subtodos')) {
+            return false;
+          }
+        }
+      }
+
       // When the dragged item moves into a .subtodos container, highlight its
       // parent .todo to signal "will nest here". Clear on any other move.
       document.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
-      const toList = evt.to;
-      if (toList.classList.contains('subtodos')) {
+      if (isSubtodos) {
         const wrap = toList.closest('.subtodos-wrap');
         const parentTodo = wrap ? wrap.parentElement : null;
         if (parentTodo && parentTodo.classList.contains('todo')) {

@@ -704,23 +704,22 @@
     display: inline-block;
   }
   .followups-toggle.open .chev { transform: rotate(90deg); }
-  /* Hide the toggle when there are no Later items; reveal it while dragging */
-  .followups-toggle.empty { display: none; }
-  .card.drag-active .followups-toggle.empty { display: flex; }
-  .followups-list { display: none; }
-  .followups-list.open { display: block; }
-  .followups-list .todo { background: var(--bg-row); }
-  /* During drag, show the closed Later section as a compact drop zone without
-     expanding its contents — the user can drop onto it without seeing inside */
-  .card.drag-active .followups-list:not(.open) {
-    display: block;
-    min-height: 36px;
-    border: 1px dashed var(--border);
-    border-radius: var(--radius);
-    margin: 4px 14px;
-    overflow: hidden;
+  /* Always show the Later toggle; make it non-interactive when empty */
+  .followups-toggle.empty { cursor: default; }
+  .followups-toggle.empty:hover { background: transparent; }
+  /* Drag highlight when an item is being dragged over the toggle */
+  .followups-toggle.drag-target {
+    background: var(--bg-hover);
   }
-  .card.drag-active .followups-list:not(.open) > .todo { display: none; }
+  /* If Sortable inserts the dragged item as a child of the toggle (it gets
+     immediately re-homed by onAdd), hide it so the toggle's flex layout
+     doesn't briefly distort. */
+  .followups-toggle > .todo { display: none !important; }
+  /* Keep the list in flow at zero height when closed so Sortable's
+     emptyInsertThreshold can find its bounding box and accept drops. */
+  .followups-list { display: block; height: 0; overflow: hidden; }
+  .followups-list.open { height: auto; }
+  .followups-list .todo { background: var(--bg-row); }
 
   /* ---- Add-todo input ---- */
   .add-todo {
@@ -1745,18 +1744,23 @@ function initSortable(container, group, card) {
       // When the dragged item moves into a .subtodos container, highlight its
       // parent .todo to signal "will nest here". Clear on any other move.
       document.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
+      // Same idea for the Later toggle: highlight when the cursor lands on it.
+      document.querySelectorAll('.followups-toggle.drag-target').forEach(t => t.classList.remove('drag-target'));
       if (isSubtodos) {
         const wrap = toList.closest('.subtodos-wrap');
         const parentTodo = wrap ? wrap.parentElement : null;
         if (parentTodo && parentTodo.classList.contains('todo')) {
           parentTodo.classList.add('drag-target');
         }
+      } else if (toList.classList.contains('followups-toggle')) {
+        toList.classList.add('drag-target');
       }
     },
     onEnd(evt) {
       document.querySelectorAll('.card').forEach(c => {
         c.classList.remove('drag-active');
         c.querySelectorAll('.todo.drag-target').forEach(t => t.classList.remove('drag-target'));
+        c.querySelectorAll('.followups-toggle.drag-target').forEach(t => t.classList.remove('drag-target'));
       });
       // Remove all anchor clones — use document scope so cross-card drags
       // clean up the clone in the source card too.
@@ -1890,6 +1894,20 @@ function renderCard(project) {
     }
     card.appendChild(list);
     initSortable(list, followupGroup, card);
+    // Make the toggle itself a drop target that re-homes the dropped item to
+    // the actual followups-list. This works for both empty and non-empty
+    // (closed) Later sections, since the toggle has no .todo children of its
+    // own and emptyInsertThreshold catches the cursor anywhere within 30px.
+    Sortable.create(toggleBtn, {
+      group: followupGroup,
+      draggable: '.todo:not(.sortable-anchor-clone)',
+      emptyInsertThreshold: 30,
+      onAdd(evt) {
+        const targetCard = toggleBtn.closest('.card');
+        const targetList = targetCard ? targetCard.querySelector('.followups-list') : null;
+        if (targetList) targetList.appendChild(evt.item);
+      },
+    });
   }
 
   // Add-todo input
